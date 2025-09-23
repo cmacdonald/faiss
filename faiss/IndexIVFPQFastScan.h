@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -47,14 +47,17 @@ struct IndexIVFPQFastScan : IndexIVFFastScan {
             size_t M,
             size_t nbits,
             MetricType metric = METRIC_L2,
-            int bbs = 32);
+            int bbs = 32,
+            bool own_invlists = true);
 
     IndexIVFPQFastScan();
 
     // built from an IndexIVFPQ
     explicit IndexIVFPQFastScan(const IndexIVFPQ& orig, int bbs = 32);
 
-    void train_residual(idx_t n, const float* x) override;
+    void train_encoder(idx_t n, const float* x, const idx_t* assign) override;
+
+    idx_t train_encoder_num_vectors() const override;
 
     /// build precomputed table, possibly updating use_precomputed_table
     void precompute_table();
@@ -75,12 +78,9 @@ struct IndexIVFPQFastScan : IndexIVFFastScan {
     void compute_LUT(
             size_t n,
             const float* x,
-            const idx_t* coarse_ids,
-            const float* coarse_dis,
+            const CoarseQuantized& cq,
             AlignedTable<float>& dis_tables,
             AlignedTable<float>& biases) const override;
-
-    void sa_decode(idx_t n, const uint8_t* bytes, float* x) const override;
 };
 
 } // namespace faiss

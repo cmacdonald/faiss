@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -12,6 +12,8 @@
 
 #include <faiss/Clustering.h>
 #include <faiss/impl/AdditiveQuantizer.h>
+
+#include <faiss/utils/approx_topk/mode.h>
 
 namespace faiss {
 
@@ -28,8 +30,8 @@ struct ResidualQuantizer : AdditiveQuantizer {
     //  Was enum but that does not work so well with bitmasks
     using train_type_t = int;
 
-    /// Or of the Train_* flags below
-    train_type_t train_type;
+    /// Binary or of the Train_* flags below
+    train_type_t train_type = Train_progressive_dim;
 
     /// regular k-means (minimal amount of computation)
     static const int Train_default = 0;
@@ -41,31 +43,31 @@ struct ResidualQuantizer : AdditiveQuantizer {
     static const int Train_refine_codebook = 2;
 
     /// number of iterations for codebook refinement.
-    int niter_codebook_refine;
+    int niter_codebook_refine = 5;
 
     /** set this bit on train_type if beam is to be trained only on the
      *  first element of the beam (faster but less accurate) */
     static const int Train_top_beam = 1024;
 
-    /** set this bit to not autmatically compute the codebook tables
+    /** set this bit to *not* autmatically compute the codebook tables
      * after training */
     static const int Skip_codebook_tables = 2048;
 
     /// beam size used for training and for encoding
-    int max_beam_size;
+    int max_beam_size = 5;
 
     /// use LUT for beam search
-    int use_beam_LUT;
+    int use_beam_LUT = 0;
 
-    /// distance matrixes with beam search can get large, so use this
-    /// to batch computations at encoding time.
-    size_t max_mem_distances;
+    /// Currently used mode of approximate min-k computations.
+    /// Default value is EXACT_TOPK.
+    ApproxTopK_mode_t approx_topk_mode = ApproxTopK_mode_t::EXACT_TOPK;
 
     /// clustering parameters
     ProgressiveDimClusteringParameters cp;
 
     /// if non-NULL, use this index for assignment
-    ProgressiveDimIndexFactory* assign_index_factory;
+    ProgressiveDimIndexFactory* assign_index_factory = nullptr;
 
     ResidualQuantizer(
             size_t d,
@@ -83,6 +85,9 @@ struct ResidualQuantizer : AdditiveQuantizer {
     /// Train the residual quantizer
     void train(size_t n, const float* x) override;
 
+    /// Copy the M codebook levels from other, starting from skip_M
+    void initialize_from(const ResidualQuantizer& other, int skip_M = 0);
+
     /** Encode the vectors and compute codebook that minimizes the quantization
      * error on these codes
      *
@@ -99,7 +104,7 @@ struct ResidualQuantizer : AdditiveQuantizer {
      * @param codes  output codes, size n * code_size
      * @param centroids  centroids to be added to x, size n * d
      */
-    void compute_codes(
+    void compute_codes_add_centroids(
             const float* x,
             uint8_t* codes,
             size_t n,
@@ -107,7 +112,7 @@ struct ResidualQuantizer : AdditiveQuantizer {
 
     /** lower-level encode function
      *
-     * @param n              number of vectors to hanlde
+     * @param n              number of vectors to handle
      * @param residuals      vectors to encode, size (n, beam_size, d)
      * @param beam_size      input beam size
      * @param new_beam_size  output beam size (should be <= K * beam_size)
@@ -138,72 +143,6 @@ struct ResidualQuantizer : AdditiveQuantizer {
      * @param beam_size  if != -1, override the beam size
      */
     size_t memory_per_point(int beam_size = -1) const;
-
-    /** Cross products used in codebook tables
-     *
-     * These are used to keep trak of norms of centroids.
-     */
-    void compute_codebook_tables();
-
-    /// dot products of all codebook vectors with each other
-    /// size total_codebook_size * total_codebook_size
-    std::vector<float> codebook_cross_products;
-    /// norms of all vectors
-    std::vector<float> cent_norms;
 };
 
-/** Encode a residual by sampling from a centroid table.
- *
- * This is a single encoding step the residual quantizer.
- * It allows low-level access to the encoding function, exposed mainly for unit
- * tests.
- *
- * @param n              number of vectors to hanlde
- * @param residuals      vectors to encode, size (n, beam_size, d)
- * @param cent           centroids, size (K, d)
- * @param beam_size      input beam size
- * @param m              size of the codes for the previous encoding steps
- * @param codes          code array for the previous steps of the beam (n,
- * beam_size, m)
- * @param new_beam_size  output beam size (should be <= K * beam_size)
- * @param new_codes      output codes, size (n, new_beam_size, m + 1)
- * @param new_residuals  output residuals, size (n, new_beam_size, d)
- * @param new_distances  output distances, size (n, new_beam_size)
- * @param assign_index   if non-NULL, will be used to perform assignment
- */
-void beam_search_encode_step(
-        size_t d,
-        size_t K,
-        const float* cent,
-        size_t n,
-        size_t beam_size,
-        const float* residuals,
-        size_t m,
-        const int32_t* codes,
-        size_t new_beam_size,
-        int32_t* new_codes,
-        float* new_residuals,
-        float* new_distances,
-        Index* assign_index = nullptr);
-
-/** Encode a set of vectors using their dot products with the codebooks
- *
- */
-void beam_search_encode_step_tab(
-        size_t K,
-        size_t n,
-        size_t beam_size,                  // input sizes
-        const float* codebook_cross_norms, // size K * ldc
-        size_t ldc,                        // >= K
-        const uint64_t* codebook_offsets,  // m
-        const float* query_cp,             // size n * ldqc
-        size_t ldqc,                       // >= K
-        const float* cent_norms_i,         // size K
-        size_t m,
-        const int32_t* codes,   // n * beam_size * m
-        const float* distances, // n * beam_size
-        size_t new_beam_size,
-        int32_t* new_codes,    // n * new_beam_size * (m + 1)
-        float* new_distances); // n * new_beam_size
-
-}; // namespace faiss
+} // namespace faiss

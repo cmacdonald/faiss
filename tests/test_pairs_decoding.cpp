@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -21,7 +21,7 @@
 
 namespace {
 
-typedef faiss::Index::idx_t idx_t;
+using idx_t = faiss::idx_t;
 
 /*************************************************************
  * Test utils
@@ -87,8 +87,9 @@ bool test_search_centroid(const char* index_key) {
                 break;
             }
         }
-        if (!found)
+        if (!found) {
             return false;
+        }
     }
     return true;
 }
@@ -145,8 +146,9 @@ int test_search_and_return_centroids(const char* index_key) {
         int list_no = result_centroid_ids[i];
         int result_no = newI[i];
 
-        if (result_no < 0)
+        if (result_no < 0) {
             continue;
+        }
 
         bool found = false;
 
@@ -159,8 +161,9 @@ int test_search_and_return_centroids(const char* index_key) {
                 break;
             }
         }
-        if (!found)
+        if (!found) {
             return 2;
+        }
     }
     return 0;
 }
@@ -171,23 +174,23 @@ int test_search_and_return_centroids(const char* index_key) {
  * Test entry points
  *************************************************************/
 
-TEST(test_search_centroid, IVFFlat) {
+TEST(testSearchCentroid, IVFFlat) {
     bool ok = test_search_centroid("IVF32,Flat");
     EXPECT_TRUE(ok);
 }
 
-TEST(test_search_centroid, PCAIVFFlat) {
+TEST(testSearchCentroid, PCAIVFFlat) {
     bool ok = test_search_centroid("PCA16,IVF32,Flat");
     EXPECT_TRUE(ok);
 }
 
-TEST(test_search_and_return_centroids, IVFFlat) {
+TEST(testSearchAndReturnCentroids, IVFFlat) {
     int err = test_search_and_return_centroids("IVF32,Flat");
     EXPECT_NE(err, 1);
     EXPECT_NE(err, 2);
 }
 
-TEST(test_search_and_return_centroids, PCAIVFFlat) {
+TEST(testSearchAndReturnCentroids, PCAIVFFlat) {
     int err = test_search_and_return_centroids("PCA16,IVF32,Flat");
     EXPECT_NE(err, 1);
     EXPECT_NE(err, 2);

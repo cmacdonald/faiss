@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -15,7 +15,6 @@
 
 #include <sys/mman.h>
 #include <sys/stat.h>
-#include <sys/types.h>
 #include <unistd.h>
 
 #include <faiss/impl/FaissAssert.h>
@@ -149,12 +148,13 @@ struct OnDiskInvertedLists::OngoingPrefetch {
 
         bool one_list() {
             idx_t list_no = pf->get_next_list();
-            if (list_no == -1)
+            if (list_no == -1) {
                 return false;
+            }
             const OnDiskInvertedLists* od = pf->od;
             od->locks->lock_1(list_no);
             size_t n = od->list_size(list_no);
-            const Index::idx_t* idx = od->get_ids(list_no);
+            const idx_t* idx = od->get_ids(list_no);
             const uint8_t* codes = od->get_codes(list_no);
             int cs = 0;
             for (size_t i = 0; i < n; i++) {
@@ -196,8 +196,9 @@ struct OnDiskInvertedLists::OngoingPrefetch {
     static void* prefetch_list(void* arg) {
         Thread* th = static_cast<Thread*>(arg);
 
-        while (th->one_list())
+        while (th->one_list()) {
             ;
+        }
 
         return nullptr;
     }
@@ -278,13 +279,14 @@ void OnDiskInvertedLists::do_mmap() {
     uint8_t* ptro =
             (uint8_t*)mmap(nullptr, totsize, prot, MAP_SHARED, fileno(f), 0);
 
+    fclose(f);
+
     FAISS_THROW_IF_NOT_FMT(
             ptro != MAP_FAILED,
             "could not mmap %s: %s",
             filename.c_str(),
             strerror(errno));
     ptr = ptro;
-    fclose(f);
 }
 
 void OnDiskInvertedLists::update_totsize(size_t new_size) {
@@ -388,13 +390,13 @@ const uint8_t* OnDiskInvertedLists::get_codes(size_t list_no) const {
     return ptr + lists[list_no].offset;
 }
 
-const Index::idx_t* OnDiskInvertedLists::get_ids(size_t list_no) const {
+const idx_t* OnDiskInvertedLists::get_ids(size_t list_no) const {
     if (lists[list_no].offset == INVALID_OFFSET) {
         return nullptr;
     }
 
-    return (
-        const idx_t*)(ptr + lists[list_no].offset + code_size * lists[list_no].capacity);
+    return (const idx_t*)(ptr + lists[list_no].offset +
+                          code_size * lists[list_no].capacity);
 }
 
 void OnDiskInvertedLists::update_entries(
@@ -404,9 +406,10 @@ void OnDiskInvertedLists::update_entries(
         const idx_t* ids_in,
         const uint8_t* codes_in) {
     FAISS_THROW_IF_NOT(!read_only);
-    if (n_entry == 0)
+    if (n_entry == 0) {
         return;
-    const List& l = lists[list_no];
+    }
+    [[maybe_unused]] const List& l = lists[list_no];
     assert(n_entry + offset <= l.size);
     idx_t* ids = const_cast<idx_t*>(get_ids(list_no));
     memcpy(ids + offset, ids_in, sizeof(ids_in[0]) * n_entry);
@@ -515,15 +518,16 @@ size_t OnDiskInvertedLists::allocate_slot(size_t capacity) {
 
 void OnDiskInvertedLists::free_slot(size_t offset, size_t capacity) {
     // should hold lock2
-    if (capacity == 0)
+    if (capacity == 0) {
         return;
+    }
 
     auto it = slots.begin();
     while (it != slots.end() && it->offset <= offset) {
         it++;
     }
 
-    size_t inf = 1UL << 60;
+    size_t inf = ((size_t)1) << 60;
 
     size_t end_prev = inf;
     if (it != slots.begin()) {
@@ -532,7 +536,7 @@ void OnDiskInvertedLists::free_slot(size_t offset, size_t capacity) {
         end_prev = prev->offset + prev->capacity;
     }
 
-    size_t begin_next = 1L << 60;
+    size_t begin_next = ((size_t)1) << 60;
     if (it != slots.end()) {
         begin_next = it->offset;
     }
@@ -564,15 +568,16 @@ void OnDiskInvertedLists::free_slot(size_t offset, size_t capacity) {
 /*****************************************
  * Compact form
  *****************************************/
-
-size_t OnDiskInvertedLists::merge_from(
+size_t OnDiskInvertedLists::merge_from_multiple(
         const InvertedLists** ils,
         int n_il,
+        bool shift_ids,
         bool verbose) {
     FAISS_THROW_IF_NOT_MSG(
             totsize == 0, "works only on an empty InvertedLists");
 
     std::vector<size_t> sizes(nlist);
+    std::vector<size_t> shift_id_offsets(n_il);
     for (int i = 0; i < n_il; i++) {
         const InvertedLists* il = ils[i];
         FAISS_THROW_IF_NOT(il->nlist == nlist && il->code_size == code_size);
@@ -580,6 +585,10 @@ size_t OnDiskInvertedLists::merge_from(
         for (size_t j = 0; j < nlist; j++) {
             sizes[j] += il->list_size(j);
         }
+
+        size_t il_totsize = il->compute_ntotal();
+        shift_id_offsets[i] =
+                (shift_ids && i > 0) ? shift_id_offsets[i - 1] + il_totsize : 0;
     }
 
     size_t cums = 0;
@@ -604,11 +613,21 @@ size_t OnDiskInvertedLists::merge_from(
             const InvertedLists* il = ils[i];
             size_t n_entry = il->list_size(j);
             l.size += n_entry;
+            ScopedIds scope_ids(il, j);
+            const idx_t* scope_ids_data = scope_ids.get();
+            std::vector<idx_t> new_ids;
+            if (shift_ids) {
+                new_ids.resize(n_entry);
+                for (size_t k = 0; k < n_entry; k++) {
+                    new_ids[k] = scope_ids[k] + shift_id_offsets[i];
+                }
+                scope_ids_data = new_ids.data();
+            }
             update_entries(
                     j,
                     l.size - n_entry,
                     n_entry,
-                    ScopedIds(il, j).get(),
+                    scope_ids_data,
                     ScopedCodes(il, j).get());
         }
         assert(l.size == l.capacity);
@@ -637,7 +656,7 @@ size_t OnDiskInvertedLists::merge_from(
 size_t OnDiskInvertedLists::merge_from_1(
         const InvertedLists* ils,
         bool verbose) {
-    return merge_from(&ils, 1, verbose);
+    return merge_from_multiple(&ils, 1, verbose);
 }
 
 void OnDiskInvertedLists::crop_invlists(size_t l0, size_t l1) {
@@ -780,7 +799,7 @@ InvertedLists* OnDiskInvertedListsIOHook::read_ArrayInvertedLists(
         OnDiskInvertedLists::List& l = ails->lists[i];
         l.size = l.capacity = sizes[i];
         l.offset = o;
-        o += l.size * (sizeof(OnDiskInvertedLists::idx_t) + ails->code_size);
+        o += l.size * (sizeof(idx_t) + ails->code_size);
     }
     // resume normal reading of file
     fseek(fdesc, o, SEEK_SET);

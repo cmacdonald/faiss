@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -31,10 +31,7 @@ struct IndexPQ : IndexFlatCodes {
      * @param M      number of subquantizers
      * @param nbits  number of bit per subvector index
      */
-    IndexPQ(int d,        ///< dimensionality of the input vectors
-            size_t M,     ///< number of subquantizers
-            size_t nbits, ///< number of bit per subvector index
-            MetricType metric = METRIC_L2);
+    IndexPQ(int d, size_t M, size_t nbits, MetricType metric = METRIC_L2);
 
     IndexPQ();
 
@@ -45,14 +42,15 @@ struct IndexPQ : IndexFlatCodes {
             const float* x,
             idx_t k,
             float* distances,
-            idx_t* labels) const override;
+            idx_t* labels,
+            const SearchParameters* params = nullptr) const override;
 
     /* The standalone codec interface */
     void sa_encode(idx_t n, const float* x, uint8_t* bytes) const override;
 
     void sa_decode(idx_t n, const uint8_t* bytes, float* x) const override;
 
-    DistanceComputer* get_distance_computer() const override;
+    FlatCodesDistanceComputer* get_FlatCodesDistanceComputer() const override;
 
     /******************************************************
      * Polysemous codes implementation
@@ -87,7 +85,9 @@ struct IndexPQ : IndexFlatCodes {
             const float* x,
             idx_t k,
             float* distances,
-            idx_t* labels) const;
+            idx_t* labels,
+            int polysemous_ht,
+            bool generalized_hamming) const;
 
     /// prepare query for a polysemous search, but instead of
     /// computing the result, just get the histogram of Hamming
@@ -107,6 +107,12 @@ struct IndexPQ : IndexFlatCodes {
      * @param dis  output distances, size n * ntotal
      */
     void hamming_distance_table(idx_t n, const float* x, int32_t* dis) const;
+};
+
+/// override search parameters from the class
+struct SearchParametersPQ : SearchParameters {
+    IndexPQ::Search_type_t search_type;
+    int polysemous_ht;
 };
 
 /// statistics are robust to internal threading, but not if
@@ -142,16 +148,21 @@ struct MultiIndexQuantizer : Index {
             const float* x,
             idx_t k,
             float* distances,
-            idx_t* labels) const override;
+            idx_t* labels,
+            const SearchParameters* params = nullptr) const override;
 
     /// add and reset will crash at runtime
     void add(idx_t n, const float* x) override;
+
     void reset() override;
 
     MultiIndexQuantizer() {}
 
     void reconstruct(idx_t key, float* recons) const override;
 };
+
+// block size used in MultiIndexQuantizer::search
+FAISS_API extern int multi_index_quantizer_search_bs;
 
 /** MultiIndexQuantizer where the PQ assignmnet is performed by sub-indexes
  */
@@ -175,7 +186,8 @@ struct MultiIndexQuantizer2 : MultiIndexQuantizer {
             const float* x,
             idx_t k,
             float* distances,
-            idx_t* labels) const override;
+            idx_t* labels,
+            const SearchParameters* params = nullptr) const override;
 };
 
 } // namespace faiss

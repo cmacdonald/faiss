@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -11,6 +11,7 @@
 #include <faiss/VectorTransform.h>
 #include <faiss/impl/AuxIndexStructures.h>
 
+#include <chrono>
 #include <cinttypes>
 #include <cmath>
 #include <cstdio>
@@ -27,40 +28,10 @@
 
 namespace faiss {
 
-ClusteringParameters::ClusteringParameters()
-        : niter(25),
-          nredo(1),
-          verbose(false),
-          spherical(false),
-          int_centroids(false),
-          update_index(false),
-          frozen_centroids(false),
-          min_points_per_centroid(39),
-          max_points_per_centroid(256),
-          seed(1234),
-          decode_block_size(32768) {}
-// 39 corresponds to 10000 / 256 -> to avoid warnings on PQ tests with randu10k
-
 Clustering::Clustering(int d, int k) : d(d), k(k) {}
 
 Clustering::Clustering(int d, int k, const ClusteringParameters& cp)
         : ClusteringParameters(cp), d(d), k(k) {}
-
-static double imbalance_factor(int n, int k, int64_t* assign) {
-    std::vector<int> hist(k, 0);
-    for (int i = 0; i < n; i++)
-        hist[assign[i]]++;
-
-    double tot = 0, uf = 0;
-
-    for (int i = 0; i < k; i++) {
-        tot += hist[i];
-        uf += hist[i] * (double)hist[i];
-    }
-    uf = uf * k / (tot * tot);
-
-    return uf;
-}
 
 void Clustering::post_process_centroids() {
     if (spherical) {
@@ -68,8 +39,9 @@ void Clustering::post_process_centroids() {
     }
 
     if (int_centroids) {
-        for (size_t i = 0; i < centroids.size(); i++)
+        for (size_t i = 0; i < centroids.size(); i++) {
             centroids[i] = roundf(centroids[i]);
+        }
     }
 }
 
@@ -88,7 +60,13 @@ void Clustering::train(
 
 namespace {
 
-using idx_t = Clustering::idx_t;
+uint64_t get_actual_rng_seed(const int seed) {
+    return (seed >= 0)
+            ? seed
+            : static_cast<uint64_t>(std::chrono::high_resolution_clock::now()
+                                            .time_since_epoch()
+                                            .count());
+}
 
 idx_t subsample_training_set(
         const Clustering& clus,
@@ -103,11 +81,30 @@ idx_t subsample_training_set(
                clus.k * clus.max_points_per_centroid,
                nx);
     }
-    std::vector<int> perm(nx);
-    rand_perm(perm.data(), nx, clus.seed);
+
+    const uint64_t actual_seed = get_actual_rng_seed(clus.seed);
+
+    std::vector<int> perm;
+    if (clus.use_faster_subsampling) {
+        // use subsampling with splitmix64 rng
+        SplitMix64RandomGenerator rng(actual_seed);
+
+        const idx_t new_nx = clus.k * clus.max_points_per_centroid;
+        perm.resize(new_nx);
+        for (idx_t i = 0; i < new_nx; i++) {
+            perm[i] = rng.rand_int(nx);
+        }
+    } else {
+        // use subsampling with a default std rng
+        perm.resize(nx);
+        rand_perm(perm.data(), nx, actual_seed);
+    }
+
     nx = clus.k * clus.max_points_per_centroid;
     uint8_t* x_new = new uint8_t[nx * line_size];
     *x_out = x_new;
+
+    // might be worth omp-ing as well
     for (idx_t i = 0; i < nx; i++) {
         memcpy(x_new + i * line_size, x + perm[i] * line_size, line_size);
     }
@@ -233,7 +230,7 @@ int split_clusters(
     for (size_t ci = 0; ci < k; ci++) {
         if (hassign[ci] == 0) { /* need to redefine a centroid */
             size_t cj;
-            for (cj = 0; 1; cj = (cj + 1) % k) {
+            for (cj = 0; true; cj = (cj + 1) % k) {
                 /* probability to pick this cluster for split */
                 float p = (hassign[cj] - 1.0) / (float)(n - k);
                 float r = rng.rand_float();
@@ -266,7 +263,7 @@ int split_clusters(
     return nsplit;
 }
 
-}; // namespace
+} // namespace
 
 void Clustering::train_encoded(
         idx_t nx,
@@ -296,7 +293,7 @@ void Clustering::train_encoded(
 
     double t0 = getmillisecs();
 
-    if (!codec) {
+    if (!codec && check_input_data_for_NaNs) {
         // Check for NaNs in input data. Normally it is the user's
         // responsibility, but it may spare us some hard-to-debug
         // reports.
@@ -374,7 +371,7 @@ void Clustering::train_encoded(
     std::unique_ptr<float[]> dis(new float[nx]);
 
     // remember best iteration for redo
-    bool lower_is_better = index.metric_type != METRIC_INNER_PRODUCT;
+    bool lower_is_better = !is_similarity_metric(index.metric_type);
     float best_obj = lower_is_better ? HUGE_VALF : -HUGE_VALF;
     std::vector<ClusteringIterationStats> best_iteration_stats;
     std::vector<float> best_centroids;
@@ -399,6 +396,9 @@ void Clustering::train_encoded(
     }
     t0 = getmillisecs();
 
+    // initialize seed
+    const uint64_t actual_seed = get_actual_rng_seed(seed);
+
     // temporary buffer to decode vectors during the optimization
     std::vector<float> decode_buffer(codec ? d * decode_block_size : 0);
 
@@ -411,7 +411,7 @@ void Clustering::train_encoded(
         centroids.resize(d * k);
         std::vector<int> perm(nx);
 
-        rand_perm(perm.data(), nx, seed + 1 + redo * 15486557L);
+        rand_perm(perm.data(), nx, actual_seed + 1 + redo * 15486557L);
 
         if (!codec) {
             for (int i = n_input_centroids; i < k; i++) {
@@ -531,8 +531,9 @@ void Clustering::train_encoded(
             InterruptCallback::check();
         }
 
-        if (verbose)
+        if (verbose) {
             printf("\n");
+        }
         if (nredo > 1) {
             if ((lower_is_better && obj < best_obj) ||
                 (!lower_is_better && obj > best_obj)) {
@@ -592,7 +593,7 @@ float kmeans_clustering(
         const float* x,
         float* centroids) {
     Clustering clus(d, k);
-    clus.verbose = d * n * k > (1L << 30);
+    clus.verbose = d * n * k > (size_t(1) << 30);
     // display logs if > 1Gflop per iteration
     IndexFlatL2 index(d);
     clus.train(n, x, index);
@@ -624,8 +625,6 @@ ProgressiveDimClustering::ProgressiveDimClustering(
 
 namespace {
 
-using idx_t = Index::idx_t;
-
 void copy_columns(idx_t n, idx_t d1, const float* src, idx_t d2, float* dest) {
     idx_t d = std::min(d1, d2);
     for (idx_t i = 0; i < n; i++) {
@@ -635,7 +634,7 @@ void copy_columns(idx_t n, idx_t d1, const float* src, idx_t d2, float* dest) {
     }
 }
 
-}; // namespace
+} // namespace
 
 void ProgressiveDimClustering::train(
         idx_t n,

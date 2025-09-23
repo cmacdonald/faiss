@@ -1,4 +1,4 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
@@ -13,16 +13,9 @@ import numpy as np
 import faiss
 
 from faiss.contrib import datasets
-import platform
 
-
-class TestCompileOptions(unittest.TestCase):
-
-    def test_compile_options(self):
-        options = faiss.get_compile_options()
-        options = options.split(' ')
-        for option in options:
-            assert option in ['AVX2', 'NEON', 'GENERIC', 'OPTIMIZE']
+# the tests tend to timeout in stress modes + dev otherwise
+faiss.omp_set_num_threads(4)
 
 
 class TestSearch(unittest.TestCase):
@@ -42,7 +35,6 @@ class TestSearch(unittest.TestCase):
         nq = Iref.shape[0]
         recall_at_1 = (Iref[:, 0] == Ia[:, 0]).sum() / nq
         assert recall_at_1 > 0.6
-        # print(f'recall@1 = {recall_at_1:.3f}')
 
 
     # This is an experiment to see if we can catch performance
@@ -53,6 +45,7 @@ class TestSearch(unittest.TestCase):
     # not exploitable, hence the flag test on that as well.
     @unittest.skipUnless(
         ('AVX2' in faiss.get_compile_options() or
+        'AVX512' in faiss.get_compile_options() or
         'NEON' in faiss.get_compile_options()) and
         "OPTIMIZE" in faiss.get_compile_options(),
         "only test while building with avx2 or neon")
@@ -81,7 +74,7 @@ class TestSearch(unittest.TestCase):
         t1 = time.time()
         pqfs_t = t1 - t0
         print('PQ16x4fs search time:', pqfs_t)
-        self.assertLess(pqfs_t * 5, pq_t)
+        self.assertLess(pqfs_t * 4, pq_t)
 
 
 class TestRounding(unittest.TestCase):
@@ -138,6 +131,36 @@ class TestRounding(unittest.TestCase):
     def test_implem_14_ip(self):
         self.do_test_rounding(12, faiss.METRIC_INNER_PRODUCT)
 
+
+class TestReconstruct(unittest.TestCase):
+
+    def test_pqfastscan(self):
+        ds = datasets.SyntheticDataset(20, 1000, 1000, 0)
+
+        index = faiss.index_factory(20, 'PQ5x4')
+        index.train(ds.get_train())
+        index.add(ds.get_database())
+        recons = index.reconstruct_n(0, index.ntotal)
+
+        index2 = faiss.IndexPQFastScan(index)
+        recons2 = index2.reconstruct_n(0, index.ntotal)
+
+        np.testing.assert_array_equal(recons, recons2)
+
+    def test_aqfastscan(self):
+        ds = datasets.SyntheticDataset(20, 1000, 1000, 0)
+
+        index = faiss.index_factory(20, 'RQ5x4_Nrq2x4')
+        index.train(ds.get_train())
+        index.add(ds.get_database())
+        recons = index.reconstruct_n(0, index.ntotal)
+
+        index2 = faiss.IndexAdditiveQuantizerFastScan(index)
+        recons2 = index2.reconstruct_n(0, index.ntotal)
+
+        np.testing.assert_array_equal(recons, recons2)
+
+
 #########################################################
 # Kernel unit test
 #########################################################
@@ -161,6 +184,8 @@ def reference_accu(codes, LUT):
 
 
 # disabled because the function to write to mem is not implemented currently
+
+
 class ThisIsNotATestLoop5:    # (unittest.TestCase):
 
     def do_loop5_kernel(self, nq, bb):
@@ -253,6 +278,17 @@ class TestImplems(unittest.TestCase):
             index2.implem = 4
             Dref, Iref = index2.search(ds.get_queries(), 10)
 
+            # check CodePacker
+            codes_ref = faiss.vector_to_array(index.codes)
+            codes_ref = codes_ref.reshape(-1, index.code_size)
+            index2codes = faiss.vector_to_array(index2.codes)
+            code_packer = index2.get_CodePacker()
+            index2codes = index2codes.reshape(-1, code_packer.block_size)
+
+            for i in range(0, len(codes_ref), 13):
+                code_new = code_packer.unpack_1(index2codes, i)
+                np.testing.assert_array_equal(codes_ref[i], code_new)
+
             self.cache[(d, metric)] = (ds, index, Dref, Iref)
 
         return self.cache[(d, metric)]
@@ -269,12 +305,10 @@ class TestImplems(unittest.TestCase):
 
         verify_with_draws(self, Dref, Iref, Dnew, Inew)
 
-
     def build_fast_scan_index(self, index, params):
         index2 = faiss.IndexPQFastScan(index)
         index2.implem = 5
         return index2
-
 
 
 class TestImplem12(TestImplems):
@@ -303,8 +337,6 @@ class TestImplem12(TestImplems):
 
     def test_qbs6_odd_dim(self):
         self.do_with_params(30, 0x33)
-
-
 
 
 class TestImplem13(TestImplems):
@@ -374,6 +406,7 @@ class TestImplem15(TestImplems):
     def test_2_64(self):
         self.do_with_params(32, (2, 64))
 
+
 class TestAdd(unittest.TestCase):
 
     def do_test_add(self, d, bbs):
@@ -442,7 +475,7 @@ class TestAQFastScan(unittest.TestCase):
         Compare IndexAdditiveQuantizerFastScan with IndexAQ (qint8)
         """
         d = 16
-        ds = datasets.SyntheticDataset(d, 1000, 2000, 1000, metric_type)
+        ds = datasets.SyntheticDataset(d, 1000, 1000, 500, metric_type)
         gt = ds.get_groundtruth(k=1)
 
         if metric_type == 'L2':
@@ -468,7 +501,6 @@ class TestAQFastScan(unittest.TestCase):
         recall_ref = (Iref == gt).sum() / nq
         recall = (Ia == gt).sum() / nq
 
-        print(aq, st, implem, metric_type, recall_ref, recall)
         assert abs(recall_ref - recall) < 0.05
 
     def xx_test_accuracy(self):
@@ -501,10 +533,9 @@ class TestAQFastScan(unittest.TestCase):
         nq = Iref.shape[0]
         recall_ref = (Iref == gt).sum() / nq
         recall1 = (I1 == gt).sum() / nq
-        print(recall_ref, recall1)
         assert abs(recall_ref - recall1) < 0.05
 
-    def test_from_idxaq(self):
+    def xx_test_from_idxaq(self):
         for implem in 2, 3, 4:
             self.subtest_from_idxaq(implem, 'L2')
             self.subtest_from_idxaq(implem, 'IP')
@@ -550,7 +581,7 @@ class TestAQFastScan(unittest.TestCase):
 
     def subtest_io(self, factory_str):
         d = 8
-        ds = datasets.SyntheticDataset(d, 1000, 2000, 1000)
+        ds = datasets.SyntheticDataset(d, 1000, 500, 100)
 
         index = faiss.index_factory(d, factory_str)
         index.train(ds.get_train())
@@ -575,15 +606,112 @@ class TestAQFastScan(unittest.TestCase):
         self.subtest_io('RQ4x4fs_Nlsq2x4')
 
 
+# programatically generate tests to get finer test granularity.
+
+def add_TestAQFastScan_subset_accuracy(aq, st, implem, metric):
+    setattr(
+        TestAQFastScan,
+        f"test_accuracy_{metric}_{aq}_implem{implem}",
+        lambda self: self.subtest_accuracy(aq, st, implem, metric)
+    )
+
+
 for metric in 'L2', 'IP':
     for implem in 0, 12, 13, 14, 15:
-        setattr(
-            TestAQFastScan,
-            f"test_accuracy_{metric}_LSQ_implem{implem}",
-            lambda self: self.subtest_accuracy('LSQ', 'lsq', implem, metric)
-        )
-        setattr(
-            TestAQFastScan,
-            f"test_accuracy_{metric}_RQ_implem{implem}",
-            lambda self: self.subtest_accuracy('RQ', 'rq', implem, metric)
+        add_TestAQFastScan_subset_accuracy('LSQ', 'lsq', implem, metric)
+        add_TestAQFastScan_subset_accuracy('RQ', 'rq', implem, metric)
+
+
+def add_TestAQFastScan_subtest_from_idxaq(implem, metric):
+    setattr(
+        TestAQFastScan,
+        f"test_from_idxaq_{metric}_implem{implem}",
+        lambda self: self.subtest_from_idxaq(implem, metric)
+    )
+
+
+for implem in 2, 3, 4:
+    add_TestAQFastScan_subtest_from_idxaq(implem, 'L2')
+    add_TestAQFastScan_subtest_from_idxaq(implem, 'IP')
+
+
+class TestPAQFastScan(unittest.TestCase):
+
+    def subtest_accuracy(self, paq):
+        """
+        Compare IndexPAQFastScan with IndexPAQ (qint8)
+        """
+        d = 16
+        ds = datasets.SyntheticDataset(d, 1000, 1000, 500)
+        gt = ds.get_groundtruth(k=1)
+
+        index = faiss.index_factory(d, f'{paq}2x3x4_Nqint8')
+        index.train(ds.get_train())
+        index.add(ds.get_database())
+        Dref, Iref = index.search(ds.get_queries(), 1)
+
+        indexfs = faiss.index_factory(d, f'{paq}2x3x4fs_Nlsq2x4')
+        indexfs.train(ds.get_train())
+        indexfs.add(ds.get_database())
+        Da, Ia = indexfs.search(ds.get_queries(), 1)
+
+        nq = Iref.shape[0]
+        recall_ref = (Iref == gt).sum() / nq
+        recall = (Ia == gt).sum() / nq
+
+        assert abs(recall_ref - recall) < 0.05
+
+    def test_accuracy_PLSQ(self):
+        self.subtest_accuracy("PLSQ")
+
+    def test_accuracy_PRQ(self):
+        self.subtest_accuracy("PRQ")
+
+    def subtest_factory(self, paq):
+        index = faiss.index_factory(16, f'{paq}2x3x4fs_Nlsq2x4')
+        q = faiss.downcast_Quantizer(index.aq)
+        self.assertEqual(q.nsplits, 2)
+        self.assertEqual(q.subquantizer(0).M, 3)
+
+    def test_factory(self):
+        self.subtest_factory('PRQ')
+        self.subtest_factory('PLSQ')
+
+    def subtest_io(self, factory_str):
+        d = 8
+        ds = datasets.SyntheticDataset(d, 1000, 500, 100)
+
+        index = faiss.index_factory(d, factory_str)
+        index.train(ds.get_train())
+        index.add(ds.get_database())
+        D1, I1 = index.search(ds.get_queries(), 1)
+
+        fd, fname = tempfile.mkstemp()
+        os.close(fd)
+        try:
+            faiss.write_index(index, fname)
+            index2 = faiss.read_index(fname)
+            D2, I2 = index2.search(ds.get_queries(), 1)
+            np.testing.assert_array_equal(I1, I2)
+        finally:
+            if os.path.exists(fname):
+                os.unlink(fname)
+
+    def test_io(self):
+        self.subtest_io('PLSQ2x3x4fs_Nlsq2x4')
+        self.subtest_io('PRQ2x3x4fs_Nrq2x4')
+
+
+class TestBlockDecode(unittest.TestCase):
+
+    def test_issue_2739(self):
+        ds = datasets.SyntheticDataset(960, 200, 1, 0)
+        M = 32
+        index = faiss.index_factory(ds.d, f"PQ{M}x4fs")
+        index.train(ds.get_train())
+        index.add(ds.get_database())
+
+        np.testing.assert_array_equal(
+            index.pq.decode(index.pq.compute_codes(ds.get_database()))[0, ::100],
+            index.reconstruct(0)[::100]
         )

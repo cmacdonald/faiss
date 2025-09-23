@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -18,13 +18,10 @@
 #include <faiss/IVFlib.h>
 #include <faiss/IndexIVF.h>
 #include <faiss/index_factory.h>
-#include <faiss/index_io.h>
 
 using namespace faiss;
 
 namespace {
-
-typedef Index::idx_t idx_t;
 
 // dimension of the vectors to index
 int d = 32;
@@ -77,8 +74,9 @@ struct EncapsulateInvertedLists : InvertedLists {
             : InvertedLists(il->nlist, il->code_size), il(il) {}
 
     static void* memdup(const void* m, size_t size) {
-        if (size == 0)
+        if (size == 0) {
             return nullptr;
+        }
         return memcpy(malloc(size), m, size);
     }
 

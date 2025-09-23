@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -17,6 +17,8 @@
 #include <faiss/utils/Heap.h>
 
 namespace faiss {
+
+struct FlatCodesDistanceComputer;
 
 void pairwise_extra_distances(
         int64_t d,
@@ -39,11 +41,13 @@ void knn_extra_metrics(
         size_t ny,
         MetricType mt,
         float metric_arg,
-        float_maxheap_array_t* res);
+        size_t k,
+        float* distances,
+        int64_t* indexes);
 
 /** get a DistanceComputer that refers to this type of distance and
  *  indexes a flat array of size nb */
-DistanceComputer* get_extra_distance_computer(
+FlatCodesDistanceComputer* get_extra_distance_computer(
         size_t d,
         MetricType mt,
         float metric_arg,

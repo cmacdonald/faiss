@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -7,13 +7,8 @@
 
 #include <faiss/IndexPQFastScan.h>
 
-#include <limits.h>
-#include <cassert>
 #include <memory>
 
-#include <omp.h>
-
-#include <faiss/impl/FaissAssert.h>
 #include <faiss/impl/pq4_fast_scan.h>
 #include <faiss/utils/utils.h>
 
@@ -65,6 +60,10 @@ void IndexPQFastScan::compute_float_LUT(float* lut, idx_t n, const float* x)
     } else {
         pq.compute_inner_prod_tables(n, x, lut);
     }
+}
+
+void IndexPQFastScan::sa_decode(idx_t n, const uint8_t* bytes, float* x) const {
+    pq.decode(bytes, x, n);
 }
 
 } // namespace faiss

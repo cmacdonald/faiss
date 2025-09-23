@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -22,10 +22,10 @@ namespace faiss {
  * @param argmins  argmin of each row
  */
 void smawk(
-        const Index::idx_t nrows,
-        const Index::idx_t ncols,
+        const idx_t nrows,
+        const idx_t ncols,
         const float* x,
-        Index::idx_t* argmins);
+        idx_t* argmins);
 
 /** Exact 1D K-Means by dynamic programming
  *

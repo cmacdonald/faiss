@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -24,7 +24,6 @@
 #include <faiss/utils/Heap.h>
 #include <faiss/utils/distances.h>
 #include <faiss/utils/hamming.h>
-#include <faiss/utils/utils.h>
 
 extern "C" {
 
@@ -51,17 +50,10 @@ AdditiveQuantizer::AdditiveQuantizer(
         size_t d,
         const std::vector<size_t>& nbits,
         Search_type_t search_type)
-        : d(d),
+        : Quantizer(d),
           M(nbits.size()),
           nbits(nbits),
-          verbose(false),
-          is_trained(false),
           search_type(search_type) {
-    norm_max = norm_min = NAN;
-    code_size = 0;
-    tot_bits = 0;
-    total_codebook_size = 0;
-    only_8bit = false;
     set_derived_values();
 }
 
@@ -83,24 +75,27 @@ void AdditiveQuantizer::set_derived_values() {
     }
     total_codebook_size = codebook_offsets[M];
     switch (search_type) {
-        case ST_decompress:
-        case ST_LUT_nonorm:
-        case ST_norm_from_LUT:
-            break; // nothing to add
         case ST_norm_float:
-            tot_bits += 32;
+            norm_bits = 32;
             break;
         case ST_norm_qint8:
         case ST_norm_cqint8:
         case ST_norm_lsq2x4:
         case ST_norm_rq2x4:
-            tot_bits += 8;
+            norm_bits = 8;
             break;
         case ST_norm_qint4:
         case ST_norm_cqint4:
-            tot_bits += 4;
+            norm_bits = 4;
+            break;
+        case ST_decompress:
+        case ST_LUT_nonorm:
+        case ST_norm_from_LUT:
+        default:
+            norm_bits = 0;
             break;
     }
+    tot_bits += norm_bits;
 
     // convert bits to bytes
     code_size = (tot_bits + 7) / 8;
@@ -156,6 +151,40 @@ void AdditiveQuantizer::train_norm(size_t n, const float* norms) {
     }
 }
 
+void AdditiveQuantizer::compute_codebook_tables() {
+    centroid_norms.resize(total_codebook_size);
+    fvec_norms_L2sqr(
+            centroid_norms.data(), codebooks.data(), d, total_codebook_size);
+    size_t cross_table_size = 0;
+    for (int m = 0; m < M; m++) {
+        size_t K = (size_t)1 << nbits[m];
+        cross_table_size += K * codebook_offsets[m];
+    }
+    codebook_cross_products.resize(cross_table_size);
+    size_t ofs = 0;
+    for (int m = 1; m < M; m++) {
+        FINTEGER ki = (size_t)1 << nbits[m];
+        FINTEGER kk = codebook_offsets[m];
+        FINTEGER di = d;
+        float zero = 0, one = 1;
+        assert(ofs + ki * kk <= cross_table_size);
+        sgemm_("Transposed",
+               "Not transposed",
+               &ki,
+               &kk,
+               &di,
+               &one,
+               codebooks.data() + d * kk,
+               &di,
+               codebooks.data(),
+               &di,
+               &zero,
+               codebook_cross_products.data() + ofs,
+               &ki);
+        ofs += ki * kk;
+    }
+}
+
 namespace {
 
 // TODO
@@ -195,6 +224,30 @@ float AdditiveQuantizer::decode_qcint(uint32_t c) const {
     return qnorm.get_xb()[c];
 }
 
+uint64_t AdditiveQuantizer::encode_norm(float norm) const {
+    switch (search_type) {
+        case ST_norm_float:
+            uint32_t inorm;
+            memcpy(&inorm, &norm, 4);
+            return inorm;
+        case ST_norm_qint8:
+            return encode_qint8(norm, norm_min, norm_max);
+        case ST_norm_qint4:
+            return encode_qint4(norm, norm_min, norm_max);
+        case ST_norm_lsq2x4:
+        case ST_norm_rq2x4:
+        case ST_norm_cqint8:
+            return encode_qcint(norm);
+        case ST_norm_cqint4:
+            return encode_qcint(norm);
+        case ST_decompress:
+        case ST_LUT_nonorm:
+        case ST_norm_from_LUT:
+        default:
+            return 0;
+    }
+}
+
 void AdditiveQuantizer::pack_codes(
         size_t n,
         const int32_t* codes,
@@ -230,36 +283,8 @@ void AdditiveQuantizer::pack_codes(
         for (int m = 0; m < M; m++) {
             bsw.write(codes1[m], nbits[m]);
         }
-        switch (search_type) {
-            case ST_decompress:
-            case ST_LUT_nonorm:
-            case ST_norm_from_LUT:
-                break;
-            case ST_norm_float:
-                bsw.write(*(uint32_t*)&norms[i], 32);
-                break;
-            case ST_norm_qint8: {
-                uint8_t b = encode_qint8(norms[i], norm_min, norm_max);
-                bsw.write(b, 8);
-                break;
-            }
-            case ST_norm_qint4: {
-                uint8_t b = encode_qint4(norms[i], norm_min, norm_max);
-                bsw.write(b, 4);
-                break;
-            }
-            case ST_norm_lsq2x4:
-            case ST_norm_rq2x4:
-            case ST_norm_cqint8: {
-                uint32_t b = encode_qcint(norms[i]);
-                bsw.write(b, 8);
-                break;
-            }
-            case ST_norm_cqint4: {
-                uint32_t b = encode_qcint(norms[i]);
-                bsw.write(b, 4);
-                break;
-            }
+        if (norm_bits != 0) {
+            bsw.write(encode_norm(norms[i]), norm_bits);
         }
     }
 }
@@ -269,7 +294,7 @@ void AdditiveQuantizer::decode(const uint8_t* code, float* x, size_t n) const {
             is_trained, "The additive quantizer is not trained yet.");
 
     // standard additive quantizer decoding
-#pragma omp parallel for if (n > 1000)
+#pragma omp parallel for if (n > 100)
     for (int64_t i = 0; i < n; i++) {
         BitstringReader bsr(code + i * code_size, code_size);
         float* xi = x + i * d;
@@ -378,6 +403,8 @@ void AdditiveQuantizer::compute_LUT(
 
 namespace {
 
+/* compute inner products of one query with all centroids, given a look-up
+ * table of all inner producst with codebook entries */
 void compute_inner_prod_with_LUT(
         const AdditiveQuantizer& aq,
         const float* LUT,
@@ -477,7 +504,6 @@ namespace {
 float accumulate_IPs(
         const AdditiveQuantizer& aq,
         BitstringReader& bs,
-        const uint8_t* codes,
         const float* LUT) {
     float accu = 0;
     for (int m = 0; m < aq.M; m++) {
@@ -489,6 +515,29 @@ float accumulate_IPs(
     return accu;
 }
 
+float compute_norm_from_LUT(const AdditiveQuantizer& aq, BitstringReader& bs) {
+    float accu = 0;
+    std::vector<int> idx(aq.M);
+    const float* c = aq.codebook_cross_products.data();
+    for (int m = 0; m < aq.M; m++) {
+        size_t nbit = aq.nbits[m];
+        int i = bs.read(nbit);
+        size_t K = 1 << nbit;
+        idx[m] = i;
+
+        accu += aq.centroid_norms[aq.codebook_offsets[m] + i];
+
+        for (int l = 0; l < m; l++) {
+            int j = idx[l];
+            accu += 2 * c[j * K + i];
+            c += (1 << aq.nbits[l]) * K;
+        }
+    }
+    // FAISS_THROW_IF_NOT(c == aq.codebook_cross_products.data() +
+    // aq.codebook_cross_products.size());
+    return accu;
+}
+
 } // anonymous namespace
 
 template <>
@@ -497,7 +546,7 @@ float AdditiveQuantizer::
                 const uint8_t* codes,
                 const float* LUT) const {
     BitstringReader bs(codes, code_size);
-    return accumulate_IPs(*this, bs, codes, LUT);
+    return accumulate_IPs(*this, bs, LUT);
 }
 
 template <>
@@ -506,7 +555,7 @@ float AdditiveQuantizer::
                 const uint8_t* codes,
                 const float* LUT) const {
     BitstringReader bs(codes, code_size);
-    return -accumulate_IPs(*this, bs, codes, LUT);
+    return -accumulate_IPs(*this, bs, LUT);
 }
 
 template <>
@@ -515,9 +564,10 @@ float AdditiveQuantizer::
                 const uint8_t* codes,
                 const float* LUT) const {
     BitstringReader bs(codes, code_size);
-    float accu = accumulate_IPs(*this, bs, codes, LUT);
+    float accu = accumulate_IPs(*this, bs, LUT);
     uint32_t norm_i = bs.read(32);
-    float norm2 = *(float*)&norm_i;
+    float norm2;
+    memcpy(&norm2, &norm_i, 4);
     return norm2 - 2 * accu;
 }
 
@@ -527,7 +577,7 @@ float AdditiveQuantizer::
                 const uint8_t* codes,
                 const float* LUT) const {
     BitstringReader bs(codes, code_size);
-    float accu = accumulate_IPs(*this, bs, codes, LUT);
+    float accu = accumulate_IPs(*this, bs, LUT);
     uint32_t norm_i = bs.read(8);
     float norm2 = decode_qcint(norm_i);
     return norm2 - 2 * accu;
@@ -539,7 +589,7 @@ float AdditiveQuantizer::
                 const uint8_t* codes,
                 const float* LUT) const {
     BitstringReader bs(codes, code_size);
-    float accu = accumulate_IPs(*this, bs, codes, LUT);
+    float accu = accumulate_IPs(*this, bs, LUT);
     uint32_t norm_i = bs.read(4);
     float norm2 = decode_qcint(norm_i);
     return norm2 - 2 * accu;
@@ -551,7 +601,7 @@ float AdditiveQuantizer::
                 const uint8_t* codes,
                 const float* LUT) const {
     BitstringReader bs(codes, code_size);
-    float accu = accumulate_IPs(*this, bs, codes, LUT);
+    float accu = accumulate_IPs(*this, bs, LUT);
     uint32_t norm_i = bs.read(8);
     float norm2 = decode_qint8(norm_i, norm_min, norm_max);
     return norm2 - 2 * accu;
@@ -563,9 +613,22 @@ float AdditiveQuantizer::
                 const uint8_t* codes,
                 const float* LUT) const {
     BitstringReader bs(codes, code_size);
-    float accu = accumulate_IPs(*this, bs, codes, LUT);
+    float accu = accumulate_IPs(*this, bs, LUT);
     uint32_t norm_i = bs.read(4);
     float norm2 = decode_qint4(norm_i, norm_min, norm_max);
+    return norm2 - 2 * accu;
+}
+
+template <>
+float AdditiveQuantizer::
+        compute_1_distance_LUT<false, AdditiveQuantizer::ST_norm_from_LUT>(
+                const uint8_t* codes,
+                const float* LUT) const {
+    FAISS_THROW_IF_NOT(codebook_cross_products.size() > 0);
+    BitstringReader bs(codes, code_size);
+    float accu = accumulate_IPs(*this, bs, LUT);
+    BitstringReader bs2(codes, code_size);
+    float norm2 = compute_norm_from_LUT(*this, bs2);
     return norm2 - 2 * accu;
 }
 

@@ -1,12 +1,10 @@
-#!/usr/bin/env python2
-
-# Copyright (c) Facebook, Inc. and its affiliates.
+#!/usr/bin/env fbpython
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
 from __future__ import print_function
-import os
 import time
 import numpy as np
 
@@ -103,7 +101,7 @@ use_gpu = False
 if use_gpu:
     # if this fails, it means that the GPU version was not comp
     assert faiss.StandardGpuResources, \
-        "FAISS was not compiled with GPU support, or loading _swigfaiss_gpu.so failed"
+        "Faiss was not compiled with GPU support, or loading _swigfaiss_gpu.so failed"
     res = faiss.StandardGpuResources()
     dev_no = 0
 

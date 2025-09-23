@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -13,7 +13,6 @@
 
 #include <faiss/IndexFlat.h>
 #include <faiss/IndexIVFPQ.h>
-#include <faiss/index_io.h>
 
 TEST(IVFPQ, accuracy) {
     // dimension of the vectors to index
@@ -71,14 +70,14 @@ TEST(IVFPQ, accuracy) {
             queries[i] = distrib(rng);
         }
 
-        std::vector<faiss::Index::idx_t> gt_nns(nq);
+        std::vector<faiss::idx_t> gt_nns(nq);
         std::vector<float> gt_dis(nq);
 
         index_gt.search(nq, queries.data(), 1, gt_dis.data(), gt_nns.data());
 
         index.nprobe = 5;
         int k = 5;
-        std::vector<faiss::Index::idx_t> nns(k * nq);
+        std::vector<faiss::idx_t> nns(k * nq);
         std::vector<float> dis(k * nq);
 
         index.search(nq, queries.data(), k, dis.data(), nns.data());

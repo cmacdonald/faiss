@@ -1,4 +1,4 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
@@ -40,6 +40,9 @@ class PartitionTests:
         self.do_partition(160, (70, 80))
 
 
+def pointer_to_minus1():
+    return np.array([-1], dtype='int64').view("uint64")
+
 
 class TestPartitioningFloat(unittest.TestCase, PartitionTests):
 
@@ -47,7 +50,6 @@ class TestPartitioningFloat(unittest.TestCase, PartitionTests):
         if seed is None:
             for i in range(50):
                 self.do_partition(n, q, maxval, i + 1234)
-        # print("seed=", seed)
         rs = np.random.RandomState(seed)
         if maxval is None:
             vals = rs.rand(n).astype('float32')
@@ -60,14 +62,14 @@ class TestPartitioningFloat(unittest.TestCase, PartitionTests):
         vals_orig = vals.copy()
 
         sp = faiss.swig_ptr
-        if type(q) == int:
+        if isinstance(q, int):
             faiss.CMax_float_partition_fuzzy(
                 sp(vals), sp(ids), n,
                 q, q, None
             )
         else:
             q_min, q_max = q
-            q = np.array([-1], dtype='uint64')
+            q = pointer_to_minus1()
             faiss.CMax_float_partition_fuzzy(
                 sp(vals), sp(ids), n,
                 q_min, q_max, sp(q)
@@ -93,7 +95,6 @@ class TestPartitioningFloatMin(unittest.TestCase, PartitionTests):
         if seed is None:
             for i in range(50):
                 self.do_partition(n, q, maxval, i + 1234)
-        # print("seed=", seed)
         rs = np.random.RandomState(seed)
         if maxval is None:
             vals = rs.rand(n).astype('float32')
@@ -110,14 +111,14 @@ class TestPartitioningFloatMin(unittest.TestCase, PartitionTests):
         vals[:] = mirval - vals
 
         sp = faiss.swig_ptr
-        if type(q) == int:
+        if isinstance(q, int):
             faiss.CMin_float_partition_fuzzy(
                 sp(vals), sp(ids), n,
                 q, q, None
             )
         else:
             q_min, q_max = q
-            q = np.array([-1], dtype='uint64')
+            q = pointer_to_minus1()
             faiss.CMin_float_partition_fuzzy(
                 sp(vals), sp(ids), n,
                 q_min, q_max, sp(q)
@@ -146,7 +147,6 @@ class TestPartitioningUint16(unittest.TestCase, PartitionTests):
             for i in range(50):
                 self.do_partition(n, q, maxval, i + 1234)
 
-        # print("seed=", seed)
         rs = np.random.RandomState(seed)
         vals = rs.randint(maxval, size=n).astype('uint16')
         ids = (rs.permutation(n) + 12345).astype('int64')
@@ -158,13 +158,12 @@ class TestPartitioningUint16(unittest.TestCase, PartitionTests):
         tab_a = faiss.AlignedTableUint16()
         faiss.copy_array_to_AlignedTable(vals, tab_a)
 
-        # print("tab a type", tab_a.get())
-        if type(q) == int:
+        if isinstance(q, int):
             faiss.CMax_uint16_partition_fuzzy(
                 tab_a.get(), sp(ids), n, q, q, None)
         else:
             q_min, q_max = q
-            q = np.array([-1], dtype='uint64')
+            q = pointer_to_minus1()
             faiss.CMax_uint16_partition_fuzzy(
                 tab_a.get(), sp(ids), n,
                 q_min, q_max, sp(q)
@@ -194,7 +193,6 @@ class TestPartitioningUint16Min(unittest.TestCase, PartitionTests):
         if seed is None:
             for i in range(50):
                 self.do_partition(n, q, maxval, i + 1234)
-        # print("seed=", seed)
         rs = np.random.RandomState(seed)
         vals = rs.randint(maxval, size=n).astype('uint16')
         ids = (rs.permutation(n) + 12345).astype('int64')
@@ -207,13 +205,12 @@ class TestPartitioningUint16Min(unittest.TestCase, PartitionTests):
         vals_inv = (65535 - vals).astype('uint16')
         faiss.copy_array_to_AlignedTable(vals_inv, tab_a)
 
-        # print("tab a type", tab_a.get())
-        if type(q) == int:
+        if isinstance(q, int):
             faiss.CMin_uint16_partition_fuzzy(
                 tab_a.get(), sp(ids), n, q, q, None)
         else:
             q_min, q_max = q
-            q = np.array([-1], dtype='uint64')
+            q = pointer_to_minus1()
             thresh2 = faiss.CMin_uint16_partition_fuzzy(
                 tab_a.get(), sp(ids), n,
                 q_min, q_max, sp(q)

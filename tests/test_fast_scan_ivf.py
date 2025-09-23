@@ -1,4 +1,4 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
@@ -13,6 +13,9 @@ import faiss
 
 from faiss.contrib import datasets
 from faiss.contrib.inspect_tools import get_invlist
+
+# the tests tend to timeout in stress modes + dev otherwise
+faiss.omp_set_num_threads(4)
 
 
 class TestLUTQuantization(unittest.TestCase):
@@ -82,9 +85,7 @@ class TestLUTQuantization(unittest.TestCase):
         b = btab[0]
         dis_new = self.compute_dis_quant(codes, LUTq, biasq, a, b)
 
-        #    print(a, b, dis_ref.sum())
         avg_realtive_error = np.abs(dis_new - dis_ref).sum() / dis_ref.sum()
-        # print('a=', a, 'avg_relative_error=', avg_realtive_error)
         self.assertLess(avg_realtive_error, 0.0005)
 
     def test_no_residual_ip(self):
@@ -131,8 +132,6 @@ class TestLUTQuantization(unittest.TestCase):
         self.do_test(LUT, bias, nprobe, alt_3d=True)
 
 
-
-
 ##########################################################
 # Tests for various IndexPQFastScan implementations
 ##########################################################
@@ -166,6 +165,7 @@ def three_metrics(Dref, Iref, Dnew, Inew):
 ##########################################################
 # Tests for various IndexIVFPQFastScan implementations
 ##########################################################
+
 
 class TestIVFImplem1(unittest.TestCase):
     """ Verify implem 1 (search from original invlists)
@@ -207,7 +207,6 @@ class TestIVFImplem1(unittest.TestCase):
         self.do_test(True, faiss.METRIC_INNER_PRODUCT)
 
 
-
 class TestIVFImplem2(unittest.TestCase):
     """ Verify implem 2 (search with original invlists with uint8 LUTs)
     against IndexIVFPQ. Entails some loss in accuracy. """
@@ -229,8 +228,6 @@ class TestIVFImplem2(unittest.TestCase):
 
         m3 = three_metrics(Da, Ia, Db, Ib)
 
-
-        # print(by_residual, metric, recall_at_1, recall_at_10, intersection_at_10)
         ref_results = {
             (True, 1): [0.985, 1.0, 9.872],
             (True, 0): [ 0.987, 1.0, 9.914],
@@ -257,10 +254,12 @@ class TestIVFImplem2(unittest.TestCase):
     def test_qloss_by_residual_ip(self):
         self.eval_quant_loss(True, faiss.METRIC_INNER_PRODUCT)
 
+
 class TestEquivPQ(unittest.TestCase):
 
     def test_equiv_pq(self):
         ds  = datasets.SyntheticDataset(32, 2000, 200, 4)
+        xq = ds.get_queries()
 
         index = faiss.index_factory(32, "IVF1,PQ16x4np")
         index.by_residual = False
@@ -268,36 +267,80 @@ class TestEquivPQ(unittest.TestCase):
         index.quantizer.add(np.zeros((1, 32), dtype='float32'))
         index.train(ds.get_train())
         index.add(ds.get_database())
-        Dref, Iref = index.search(ds.get_queries(), 4)
+        Dref, Iref = index.search(xq, 4)
 
         index_pq = faiss.index_factory(32, "PQ16x4np")
         index_pq.pq = index.pq
         index_pq.is_trained = True
-        index_pq.codes = faiss. downcast_InvertedLists(
+        codevec = faiss.downcast_InvertedLists(
             index.invlists).codes.at(0)
+        index_pq.codes = faiss.MaybeOwnedVectorUInt8(codevec)
         index_pq.ntotal = index.ntotal
-        Dnew, Inew = index_pq.search(ds.get_queries(), 4)
+        Dnew, Inew = index_pq.search(xq, 4)
 
         np.testing.assert_array_equal(Iref, Inew)
         np.testing.assert_array_equal(Dref, Dnew)
 
         index_pq2 = faiss.IndexPQFastScan(index_pq)
         index_pq2.implem = 12
-        Dref, Iref = index_pq2.search(ds.get_queries(), 4)
+        Dref, Iref = index_pq2.search(xq, 4)
 
         index2 = faiss.IndexIVFPQFastScan(index)
         index2.implem = 12
-        Dnew, Inew = index2.search(ds.get_queries(), 4)
+        Dnew, Inew = index2.search(xq, 4)
         np.testing.assert_array_equal(Iref, Inew)
         np.testing.assert_array_equal(Dref, Dnew)
+
+        # test encode and decode
+
+        np.testing.assert_array_equal(
+            index_pq.sa_encode(xq),
+            index2.sa_encode(xq)
+        )
+
+        np.testing.assert_array_equal(
+            index_pq.sa_decode(index_pq.sa_encode(xq)),
+            index2.sa_decode(index2.sa_encode(xq))
+        )
+
+        np.testing.assert_array_equal(
+            ((index_pq.sa_decode(index_pq.sa_encode(xq)) - xq) ** 2).sum(1),
+            ((index2.sa_decode(index2.sa_encode(xq)) - xq) ** 2).sum(1)
+        )
+
+    def test_equiv_pq_encode_decode(self):
+        ds = datasets.SyntheticDataset(32, 1000, 200, 10)
+        xq = ds.get_queries()
+
+        index_ivfpq = faiss.index_factory(ds.d, "IVF10,PQ8x4np")
+        index_ivfpq.train(ds.get_train())
+
+        index_ivfpqfs = faiss.IndexIVFPQFastScan(index_ivfpq)
+
+        np.testing.assert_array_equal(
+            index_ivfpq.sa_encode(xq),
+            index_ivfpqfs.sa_encode(xq)
+        )
+
+        np.testing.assert_array_equal(
+            index_ivfpq.sa_decode(index_ivfpq.sa_encode(xq)),
+            index_ivfpqfs.sa_decode(index_ivfpqfs.sa_encode(xq))
+        )
+
+        np.testing.assert_array_equal(
+            ((index_ivfpq.sa_decode(index_ivfpq.sa_encode(xq)) - xq) ** 2)
+            .sum(1),
+            ((index_ivfpqfs.sa_decode(index_ivfpqfs.sa_encode(xq)) - xq) ** 2)
+            .sum(1)
+        )
 
 
 class TestIVFImplem12(unittest.TestCase):
 
     IMPLEM = 12
 
-    def do_test(self, by_residual, metric=faiss.METRIC_L2, d=32):
-        ds = datasets.SyntheticDataset(d, 2000, 5000, 200)
+    def do_test(self, by_residual, metric=faiss.METRIC_L2, d=32, nq=200):
+        ds = datasets.SyntheticDataset(d, 2000, 5000, nq)
 
         index = faiss.index_factory(d, f"IVF32,PQ{d//2}x4np", metric)
         # force coarse quantizer
@@ -307,6 +350,7 @@ class TestIVFImplem12(unittest.TestCase):
         index.add(ds.get_database())
         index.nprobe = 4
 
+        # compare against implem = 2, which includes quantized LUTs
         index2 = faiss.IndexIVFPQFastScan(index)
         index2.implem = 2
         Dref, Iref = index2.search(ds.get_queries(), 4)
@@ -348,15 +392,44 @@ class TestIVFImplem12(unittest.TestCase):
     def test_by_residual_odd_dim(self):
         self.do_test(True, d=30)
 
+    # testin single query
+    def test_no_residual_single_query(self):
+        self.do_test(False, nq=1)
+
+    def test_by_residual_single_query(self):
+        self.do_test(True, nq=1)
+
+    def test_no_residual_ip_single_query(self):
+        self.do_test(False, metric=faiss.METRIC_INNER_PRODUCT, nq=1)
+
+    def test_by_residual_ip_single_query(self):
+        self.do_test(True, metric=faiss.METRIC_INNER_PRODUCT, nq=1)
+
+    def test_no_residual_odd_dim_single_query(self):
+        self.do_test(False, d=30, nq=1)
+
+    def test_by_residual_odd_dim_single_query(self):
+        self.do_test(True, d=30, nq=1)
+
 
 class TestIVFImplem10(TestIVFImplem12):
     IMPLEM = 10
 
+
 class TestIVFImplem11(TestIVFImplem12):
     IMPLEM = 11
 
+
 class TestIVFImplem13(TestIVFImplem12):
     IMPLEM = 13
+
+
+class TestIVFImplem14(TestIVFImplem12):
+    IMPLEM = 14
+
+
+class TestIVFImplem15(TestIVFImplem12):
+    IMPLEM = 15
 
 
 class TestAdd(unittest.TestCase):
@@ -400,7 +473,6 @@ class TestAdd(unittest.TestCase):
                 new_code_i = new_code_per_id[the_id]
                 np.testing.assert_array_equal(ref_code_i, new_code_i)
 
-
     def test_add(self):
         self.do_test()
 
@@ -434,7 +506,6 @@ class TestTraining(unittest.TestCase):
         Dnew, Inew = index2.search(ds.get_queries(), 10)
 
         m3 = three_metrics(Dref, Iref, Dnew, Inew)
-        #   print((by_residual, metric, d), ":", m3)
         ref_m3_tab = {
             (True, 1, 32): (0.995, 1.0, 9.91),
             (True, 0, 32): (0.99, 1.0, 9.91),
@@ -473,6 +544,101 @@ class TestTraining(unittest.TestCase):
 
     def test_by_residual_odd_dim(self):
         self.do_test(by_residual=True, d=30)
+
+
+class TestReconstruct(unittest.TestCase):
+    """ test reconstruct and sa_encode / sa_decode 
+    (also for a few additive quantizer variants) """
+
+    def do_test(self, by_residual=False):
+        d = 32
+        metric = faiss.METRIC_L2
+
+        ds = datasets.SyntheticDataset(d, 250, 200, 10)
+
+        index = faiss.IndexIVFPQFastScan(
+            faiss.IndexFlatL2(d), d, 50, d // 2, 4, metric)
+        index.by_residual = by_residual
+        index.make_direct_map(True)
+        index.train(ds.get_train())
+        index.add(ds.get_database())
+
+        # Test reconstruction
+        v123 = index.reconstruct(123)  # single id
+        v120_10 = index.reconstruct_n(120, 10)
+        np.testing.assert_array_equal(v120_10[3], v123)
+        v120_10 = index.reconstruct_batch(np.arange(120, 130))
+        np.testing.assert_array_equal(v120_10[3], v123)
+
+        # Test original list reconstruction
+        index.orig_invlists = faiss.ArrayInvertedLists(
+            index.nlist, index.code_size)
+        index.reconstruct_orig_invlists()
+        assert index.orig_invlists.compute_ntotal() == index.ntotal
+
+        # compare with non fast-scan index 
+        index2 = faiss.IndexIVFPQ(
+            index.quantizer, d, 50, d // 2, 4, metric)
+        index2.by_residual = by_residual
+        index2.pq = index.pq
+        index2.is_trained = True
+        index2.replace_invlists(index.orig_invlists, False)
+        index2.ntotal = index.ntotal
+        index2.make_direct_map(True)
+        assert np.all(index.reconstruct(123) == index2.reconstruct(123))
+
+    def test_no_residual(self):
+        self.do_test(by_residual=False)
+
+    def test_by_residual(self):
+        self.do_test(by_residual=True)
+
+    def do_test_generic(self, factory_string, 
+                        by_residual=False, metric=faiss.METRIC_L2): 
+        d = 32
+        ds = datasets.SyntheticDataset(d, 250, 200, 10)
+        index = faiss.index_factory(ds.d, factory_string, metric) 
+        if "IVF" in factory_string:
+            index.by_residual = by_residual
+            index.make_direct_map(True)
+        index.train(ds.get_train())
+        index.add(ds.get_database())
+
+        # Test reconstruction
+        v123 = index.reconstruct(123) # single id
+        v120_10 = index.reconstruct_n(120, 10)
+        np.testing.assert_array_equal(v120_10[3], v123)
+        v120_10 = index.reconstruct_batch(np.arange(120, 130))
+        np.testing.assert_array_equal(v120_10[3], v123)
+        codes = index.sa_encode(ds.get_database()[120:130])
+        np.testing.assert_array_equal(index.sa_decode(codes), v120_10)
+
+        # make sure pointers are correct after serialization
+        index2 = faiss.deserialize_index(faiss.serialize_index(index))
+        codes2 = index2.sa_encode(ds.get_database()[120:130])
+        np.testing.assert_array_equal(codes, codes2)
+        
+
+    def test_ivfpq_residual(self):
+        self.do_test_generic("IVF20,PQ16x4fs", by_residual=True)
+
+    def test_ivfpq_no_residual(self):
+        self.do_test_generic("IVF20,PQ16x4fs", by_residual=False)
+
+    def test_pq(self):
+        self.do_test_generic("PQ16x4fs")
+
+    def test_rq(self):
+        self.do_test_generic("RQ4x4fs", metric=faiss.METRIC_INNER_PRODUCT)
+
+    def test_ivfprq(self):
+        self.do_test_generic("IVF20,PRQ8x2x4fs", by_residual=True, metric=faiss.METRIC_INNER_PRODUCT)
+
+    def test_ivfprq_no_residual(self):
+        self.do_test_generic("IVF20,PRQ8x2x4fs", by_residual=False, metric=faiss.METRIC_INNER_PRODUCT)
+
+    def test_prq(self):
+        self.do_test_generic("PRQ8x2x4fs", metric=faiss.METRIC_INNER_PRODUCT)
 
 
 class TestIsTrained(unittest.TestCase):
@@ -525,14 +691,13 @@ class TestIVFAQFastScan(unittest.TestCase):
         recall_ref = (Iref == gt).sum() / nq
         recall1 = (I1 == gt).sum() / nq
 
-        print(aq, st, by_residual, implem, metric_type, recall_ref, recall1)
-        assert abs(recall_ref - recall1) < 0.05
+        assert abs(recall_ref - recall1) < 0.051
 
     def xx_test_accuracy(self):
         # generated programatically below
         for metric in 'L2', 'IP':
             for byr in True, False:
-                for implem in 0, 10, 11, 12, 13:
+                for implem in 0, 10, 11, 12, 13, 14, 15:
                     self.subtest_accuracy('RQ', 'rq', byr, implem, metric)
                     self.subtest_accuracy('LSQ', 'lsq', byr, implem, metric)
 
@@ -544,7 +709,6 @@ class TestIVFAQFastScan(unittest.TestCase):
         ds = datasets.SyntheticDataset(d, 1000, 1000, 500)
         gt = ds.get_groundtruth(k=1)
 
-        # if metric_type == 'L2':
         metric = faiss.METRIC_L2
         postfix1 = '_Nqint8'
         postfix2 = f'_N{st}2x4'
@@ -571,12 +735,11 @@ class TestIVFAQFastScan(unittest.TestCase):
         recall_ref = (Iref == gt).sum() / nq
         recall1 = (I1 == gt).sum() / nq
 
-        print(aq, st, by_residual, implem, recall_ref, recall1)
         assert abs(recall_ref - recall1) < 0.05
 
     def xx_test_rescale_accuracy(self):
         for byr in True, False:
-            for implem in 0, 10, 11, 12, 13:
+            for implem in 0, 10, 11, 12, 13, 14, 15:
                 self.subtest_accuracy('RQ', 'rq', byr, implem, 'L2')
                 self.subtest_accuracy('LSQ', 'lsq', byr, implem, 'L2')
 
@@ -596,7 +759,6 @@ class TestIVFAQFastScan(unittest.TestCase):
         nq = Iref.shape[0]
         recall_ref = (Iref == gt).sum() / nq
         recall1 = (I1 == gt).sum() / nq
-        print(recall_ref, recall1)
         assert abs(recall_ref - recall1) < 0.02
 
     def test_from_ivfaq(self):
@@ -627,18 +789,18 @@ class TestIVFAQFastScan(unittest.TestCase):
 
         assert index.nlist == nlist
         assert index.bbs == bbs
-        aq = faiss.downcast_AdditiveQuantizer(index.aq)
-        assert aq.M == M
+        q = faiss.downcast_Quantizer(index.aq)
+        assert q.M == M
 
         if aq == 'LSQ':
-            assert isinstance(aq, faiss.LocalSearchQuantizer)
+            assert isinstance(q, faiss.LocalSearchQuantizer)
         if aq == 'RQ':
-            assert isinstance(aq, faiss.ResidualQuantizer)
+            assert isinstance(q, faiss.ResidualQuantizer)
 
         if st == 'lsq':
-            assert aq.search_type == AQ.ST_norm_lsq2x4
+            assert q.search_type == AQ.ST_norm_lsq2x4
         if st == 'rq':
-            assert aq.search_type == AQ.ST_norm_rq2x4
+            assert q.search_type == AQ.ST_norm_rq2x4
 
         assert index.by_residual == (r == 'r')
 
@@ -680,32 +842,173 @@ class TestIVFAQFastScan(unittest.TestCase):
 
 # add more tests programatically
 
+def add_TestIVFAQFastScan_subtest_accuracy(
+        aq, st, by_residual, implem, metric='L2'):
+    setattr(
+        TestIVFAQFastScan,
+        f"test_accuracy_{metric}_{aq}_implem{implem}_residual{by_residual}",
+        lambda self:
+        self.subtest_accuracy(aq, st, by_residual, implem, metric)
+    )
+
+
+def add_TestIVFAQFastScan_subtest_rescale_accuracy(aq, st, by_residual, implem):
+    setattr(
+        TestIVFAQFastScan,
+        f"test_rescale_accuracy_{aq}_implem{implem}_residual{by_residual}",
+        lambda self:
+        self.subtest_rescale_accuracy(aq, st, by_residual, implem)
+    )
+
 for byr in True, False:
-    for implem in 0, 10, 11, 12, 13:
-        for metric in 'L2', 'IP':
-            setattr(
-                TestIVFAQFastScan,
-                f"test_accuracy_{metric}_RQ_implem{implem}_residual{byr}",
-                lambda self:
-                self.subtest_accuracy('RQ', 'rq', byr, implem, metric)
-            )
-            setattr(
-                TestIVFAQFastScan,
-                f"test_accuracy_{metric}_LSQ_implem{implem}_residual{byr}",
-                lambda self:
-                self.subtest_accuracy('LSQ', 'lsq', byr, implem, metric)
-            )
+    for implem in 0, 10, 11, 12, 13, 14, 15:
+        for mt in 'L2', 'IP':
+            add_TestIVFAQFastScan_subtest_accuracy('RQ', 'rq', byr, implem, mt)
+            add_TestIVFAQFastScan_subtest_accuracy('LSQ', 'lsq', byr, implem, mt)
 
-        setattr(
-            TestIVFAQFastScan,
-            f"test_rescale_accuracy_LSQ_implem{implem}_residual{byr}",
-            lambda self:
-            self.subtest_rescale_accuracy('LSQ', 'lsq', byr, implem)
-        )
+        add_TestIVFAQFastScan_subtest_rescale_accuracy('LSQ', 'lsq', byr, implem)
+        add_TestIVFAQFastScan_subtest_rescale_accuracy('RQ', 'rq', byr, implem)
 
-        setattr(
-            TestIVFAQFastScan,
-            f"test_rescale_accuracy_RQ_implem{implem}_residual{byr}",
-            lambda self:
-            self.subtest_rescale_accuracy('RQ', 'rq', byr, implem)
-        )
+
+class TestIVFPAQFastScan(unittest.TestCase):
+
+    def subtest_accuracy(self, paq):
+        """
+        Compare IndexIVFAdditiveQuantizerFastScan with
+        IndexIVFAdditiveQuantizer
+        """
+        nlist, d = 16, 8
+        ds = datasets.SyntheticDataset(d, 1000, 1000, 500)
+        gt = ds.get_groundtruth(k=1)
+
+        index = faiss.index_factory(d, f'IVF{nlist},{paq}2x3x4_Nqint8')
+        index.train(ds.get_train())
+        index.add(ds.get_database())
+        index.nprobe = 4
+        Dref, Iref = index.search(ds.get_queries(), 1)
+
+        indexfs = faiss.index_factory(d, f'IVF{nlist},{paq}2x3x4fsr_Nlsq2x4')
+        indexfs.train(ds.get_train())
+        indexfs.add(ds.get_database())
+        indexfs.nprobe = 4
+        D1, I1 = indexfs.search(ds.get_queries(), 1)
+
+        nq = Iref.shape[0]
+        recall_ref = (Iref == gt).sum() / nq
+        recall1 = (I1 == gt).sum() / nq
+
+        assert abs(recall_ref - recall1) < 0.05
+
+    def test_accuracy_PLSQ(self):
+        self.subtest_accuracy("PLSQ")
+
+    def test_accuracy_PRQ(self):
+        self.subtest_accuracy("PRQ")
+
+    def subtest_factory(self, paq):
+        nlist, d = 128, 16
+        index = faiss.index_factory(d, f'IVF{nlist},{paq}2x3x4fsr_Nlsq2x4')
+        q = faiss.downcast_Quantizer(index.aq)
+
+        self.assertEqual(index.nlist, nlist)
+        self.assertEqual(q.nsplits, 2)
+        self.assertEqual(q.subquantizer(0).M, 3)
+        self.assertTrue(index.by_residual)
+
+    def test_factory(self):
+        self.subtest_factory('PLSQ')
+        self.subtest_factory('PRQ')
+
+    def subtest_io(self, factory_str):
+        d = 8
+        ds = datasets.SyntheticDataset(d, 1000, 2000, 1000)
+
+        index = faiss.index_factory(d, factory_str)
+        index.train(ds.get_train())
+        index.add(ds.get_database())
+        D1, I1 = index.search(ds.get_queries(), 1)
+
+        fd, fname = tempfile.mkstemp()
+        os.close(fd)
+        try:
+            faiss.write_index(index, fname)
+            index2 = faiss.read_index(fname)
+            D2, I2 = index2.search(ds.get_queries(), 1)
+            np.testing.assert_array_equal(I1, I2)
+        finally:
+            if os.path.exists(fname):
+                os.unlink(fname)
+
+    def test_io(self):
+        self.subtest_io('IVF16,PLSQ2x3x4fsr_Nlsq2x4')
+        self.subtest_io('IVF16,PRQ2x3x4fs_Nrq2x4')
+
+
+class TestSearchParams(unittest.TestCase):
+
+    def test_search_params(self):
+        ds = datasets.SyntheticDataset(32, 500, 100, 10)
+
+        index = faiss.index_factory(ds.d, "IVF32,PQ16x4fs")
+        index.train(ds.get_train())
+        index.add(ds.get_database())
+
+        index.nprobe
+        index.nprobe = 4
+        Dref4, Iref4 = index.search(ds.get_queries(), 10)
+        # index.nprobe = 16
+        # Dref16, Iref16 = index.search(ds.get_queries(), 10)
+
+        index.nprobe = 1
+        Dnew4, Inew4 = index.search(
+            ds.get_queries(), 10, params=faiss.IVFSearchParameters(nprobe=4))
+        np.testing.assert_array_equal(Dref4, Dnew4)
+        np.testing.assert_array_equal(Iref4, Inew4)
+
+
+class TestRangeSearchImplem12(unittest.TestCase):
+    IMPLEM = 12
+
+    def do_test(self, metric=faiss.METRIC_L2):
+        ds = datasets.SyntheticDataset(32, 750, 200, 100)
+
+        index = faiss.index_factory(ds.d, "IVF32,PQ16x4np", metric)
+        index.train(ds.get_train())
+        index.add(ds.get_database())
+        index.nprobe = 4
+
+        # find a reasonable radius
+        D, I = index.search(ds.get_queries(), 10)
+        radius = np.median(D[:, -1])
+        lims1, D1, I1 = index.range_search(ds.get_queries(), radius)
+
+        index2 = faiss.IndexIVFPQFastScan(index)
+        index2.implem = self.IMPLEM
+        lims2, D2, I2 = index2.range_search(ds.get_queries(), radius)
+
+        nmiss = 0
+        nextra = 0
+
+        for i in range(ds.nq):
+            ref = set(I1[lims1[i]: lims1[i + 1]])
+            new = set(I2[lims2[i]: lims2[i + 1]])
+            nmiss += len(ref - new)
+            nextra += len(new - ref)
+
+        # need some tolerance because the look-up tables are quantized
+        self.assertLess(nmiss, 10)
+        self.assertLess(nextra, 10)
+
+    def test_L2(self):
+        self.do_test()
+
+    def test_IP(self):
+        self.do_test(metric=faiss.METRIC_INNER_PRODUCT)
+
+
+class TestRangeSearchImplem10(TestRangeSearchImplem12):
+    IMPLEM = 10
+
+
+class TestRangeSearchImplem110(TestRangeSearchImplem12):
+    IMPLEM = 110

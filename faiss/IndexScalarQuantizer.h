@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -20,11 +20,8 @@
 namespace faiss {
 
 /**
- * The uniform quantizer has a range [vmin, vmax]. The range can be
- * the same for all dimensions (uniform) or specific per dimension
- * (default).
+ * Flat index built on a scalar quantizer.
  */
-
 struct IndexScalarQuantizer : IndexFlatCodes {
     /// Used to encode the vectors
     ScalarQuantizer sq;
@@ -32,8 +29,8 @@ struct IndexScalarQuantizer : IndexFlatCodes {
     /** Constructor.
      *
      * @param d      dimensionality of the input vectors
-     * @param M      number of subquantizers
-     * @param nbits  number of bit per subvector index
+     * @param qtype  type of scalar quantizer (e.g., QT_4bit)
+     * @param metric distance metric used for search (default: METRIC_L2)
      */
     IndexScalarQuantizer(
             int d,
@@ -49,9 +46,10 @@ struct IndexScalarQuantizer : IndexFlatCodes {
             const float* x,
             idx_t k,
             float* distances,
-            idx_t* labels) const override;
+            idx_t* labels,
+            const SearchParameters* params = nullptr) const override;
 
-    DistanceComputer* get_distance_computer() const override;
+    FlatCodesDistanceComputer* get_FlatCodesDistanceComputer() const override;
 
     /* standalone codec interface */
     void sa_encode(idx_t n, const float* x, uint8_t* bytes) const override;
@@ -67,7 +65,6 @@ struct IndexScalarQuantizer : IndexFlatCodes {
 
 struct IndexIVFScalarQuantizer : IndexIVF {
     ScalarQuantizer sq;
-    bool by_residual;
 
     IndexIVFScalarQuantizer(
             Index* quantizer,
@@ -75,11 +72,14 @@ struct IndexIVFScalarQuantizer : IndexIVF {
             size_t nlist,
             ScalarQuantizer::QuantizerType qtype,
             MetricType metric = METRIC_L2,
-            bool encode_residual = true);
+            bool by_residual = true,
+            bool own_invlists = true);
 
     IndexIVFScalarQuantizer();
 
-    void train_residual(idx_t n, const float* x) override;
+    void train_encoder(idx_t n, const float* x, const idx_t* assign) override;
+
+    idx_t train_encoder_num_vectors() const override;
 
     void encode_vectors(
             idx_t n,
@@ -88,14 +88,23 @@ struct IndexIVFScalarQuantizer : IndexIVF {
             uint8_t* codes,
             bool include_listnos = false) const override;
 
+    void decode_vectors(
+            idx_t n,
+            const uint8_t* codes,
+            const idx_t* list_nos,
+            float* x) const override;
+
     void add_core(
             idx_t n,
             const float* x,
             const idx_t* xids,
-            const idx_t* precomputed_idx) override;
+            const idx_t* precomputed_idx,
+            void* inverted_list_context = nullptr) override;
 
     InvertedListScanner* get_InvertedListScanner(
-            bool store_pairs) const override;
+            bool store_pairs,
+            const IDSelector* sel,
+            const IVFSearchParameters* params) const override;
 
     void reconstruct_from_offset(int64_t list_no, int64_t offset, float* recons)
             const override;

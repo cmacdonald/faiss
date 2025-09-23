@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -17,8 +17,11 @@
 #include <faiss/IndexFlat.h>
 
 #include <faiss/impl/AuxIndexStructures.h>
+#include <faiss/impl/IDSelector.h>
+
 #include <faiss/impl/FaissAssert.h>
 #include <faiss/utils/distances.h>
+#include <faiss/utils/extra_distances.h>
 #include <faiss/utils/utils.h>
 
 namespace faiss {
@@ -31,20 +34,32 @@ IndexIVFFlat::IndexIVFFlat(
         Index* quantizer,
         size_t d,
         size_t nlist,
-        MetricType metric)
-        : IndexIVF(quantizer, d, nlist, sizeof(float) * d, metric) {
+        MetricType metric,
+        bool own_invlists)
+        : IndexIVF(
+                  quantizer,
+                  d,
+                  nlist,
+                  sizeof(float) * d,
+                  metric,
+                  own_invlists) {
     code_size = sizeof(float) * d;
+    by_residual = false;
+}
+
+IndexIVFFlat::IndexIVFFlat() {
+    by_residual = false;
 }
 
 void IndexIVFFlat::add_core(
         idx_t n,
         const float* x,
-        const int64_t* xids,
-        const int64_t* coarse_idx)
-
-{
+        const idx_t* xids,
+        const idx_t* coarse_idx,
+        void* inverted_list_context) {
     FAISS_THROW_IF_NOT(is_trained);
     FAISS_THROW_IF_NOT(coarse_idx);
+    FAISS_THROW_IF_NOT(!by_residual);
     assert(invlists);
     direct_map.check_can_add(xids);
 
@@ -64,8 +79,8 @@ void IndexIVFFlat::add_core(
             if (list_no >= 0 && list_no % nt == rank) {
                 idx_t id = xids ? xids[i] : ntotal + i;
                 const float* xi = x + i * d;
-                size_t offset =
-                        invlists->add_entry(list_no, id, (const uint8_t*)xi);
+                size_t offset = invlists->add_entry(
+                        list_no, id, (const uint8_t*)xi, inverted_list_context);
                 dm_adder.add(i, list_no, offset);
                 n_add++;
             } else if (rank == 0 && list_no == -1) {
@@ -89,6 +104,7 @@ void IndexIVFFlat::encode_vectors(
         const idx_t* list_nos,
         uint8_t* codes,
         bool include_listnos) const {
+    FAISS_THROW_IF_NOT(!by_residual);
     if (!include_listnos) {
         memcpy(codes, x, code_size * n);
     } else {
@@ -107,6 +123,18 @@ void IndexIVFFlat::encode_vectors(
     }
 }
 
+void IndexIVFFlat::decode_vectors(
+        idx_t n,
+        const uint8_t* codes,
+        const idx_t* /*listnos*/,
+        float* x) const {
+    for (size_t i = 0; i < n; i++) {
+        const uint8_t* code = codes + i * code_size;
+        float* xi = x + i * d;
+        memcpy(xi, code, code_size);
+    }
+}
+
 void IndexIVFFlat::sa_decode(idx_t n, const uint8_t* bytes, float* x) const {
     size_t coarse_size = coarse_code_size();
     for (size_t i = 0; i < n; i++) {
@@ -118,12 +146,18 @@ void IndexIVFFlat::sa_decode(idx_t n, const uint8_t* bytes, float* x) const {
 
 namespace {
 
-template <MetricType metric, class C>
+template <typename VectorDistance, bool use_sel>
 struct IVFFlatScanner : InvertedListScanner {
-    size_t d;
+    VectorDistance vd;
+    using C = typename VectorDistance::C;
 
-    IVFFlatScanner(size_t d, bool store_pairs) : d(d) {
-        this->store_pairs = store_pairs;
+    IVFFlatScanner(
+            const VectorDistance& vd,
+            bool store_pairs,
+            const IDSelector* sel)
+            : InvertedListScanner(store_pairs, sel), vd(vd) {
+        keep_max = vd.is_similarity;
+        code_size = vd.d * sizeof(float);
     }
 
     const float* xi;
@@ -137,10 +171,7 @@ struct IVFFlatScanner : InvertedListScanner {
 
     float distance_to_code(const uint8_t* code) const override {
         const float* yj = (float*)code;
-        float dis = metric == METRIC_INNER_PRODUCT
-                ? fvec_inner_product(xi, yj, d)
-                : fvec_L2sqr(xi, yj, d);
-        return dis;
+        return vd(xi, yj);
     }
 
     size_t scan_codes(
@@ -153,10 +184,11 @@ struct IVFFlatScanner : InvertedListScanner {
         const float* list_vecs = (const float*)codes;
         size_t nup = 0;
         for (size_t j = 0; j < list_size; j++) {
-            const float* yj = list_vecs + d * j;
-            float dis = metric == METRIC_INNER_PRODUCT
-                    ? fvec_inner_product(xi, yj, d)
-                    : fvec_L2sqr(xi, yj, d);
+            const float* yj = list_vecs + vd.d * j;
+            if (use_sel && !sel->is_member(ids[j])) {
+                continue;
+            }
+            float dis = vd(xi, yj);
             if (C::cmp(simi[0], dis)) {
                 int64_t id = store_pairs ? lo_build(list_no, j) : ids[j];
                 heap_replace_top<C>(k, simi, idxi, dis, id);
@@ -174,10 +206,11 @@ struct IVFFlatScanner : InvertedListScanner {
             RangeQueryResult& res) const override {
         const float* list_vecs = (const float*)codes;
         for (size_t j = 0; j < list_size; j++) {
-            const float* yj = list_vecs + d * j;
-            float dis = metric == METRIC_INNER_PRODUCT
-                    ? fvec_inner_product(xi, yj, d)
-                    : fvec_L2sqr(xi, yj, d);
+            const float* yj = list_vecs + vd.d * j;
+            if (use_sel && !sel->is_member(ids[j])) {
+                continue;
+            }
+            float dis = vd(xi, yj);
             if (C::cmp(radius, dis)) {
                 int64_t id = store_pairs ? lo_build(list_no, j) : ids[j];
                 res.add(dis, id);
@@ -186,20 +219,32 @@ struct IVFFlatScanner : InvertedListScanner {
     }
 };
 
+struct Run_get_InvertedListScanner {
+    using T = InvertedListScanner*;
+
+    template <class VD>
+    InvertedListScanner* f(
+            VD& vd,
+            const IndexIVFFlat* ivf,
+            bool store_pairs,
+            const IDSelector* sel) {
+        if (sel) {
+            return new IVFFlatScanner<VD, true>(vd, store_pairs, sel);
+        } else {
+            return new IVFFlatScanner<VD, false>(vd, store_pairs, sel);
+        }
+    }
+};
+
 } // anonymous namespace
 
 InvertedListScanner* IndexIVFFlat::get_InvertedListScanner(
-        bool store_pairs) const {
-    if (metric_type == METRIC_INNER_PRODUCT) {
-        return new IVFFlatScanner<METRIC_INNER_PRODUCT, CMin<float, int64_t>>(
-                d, store_pairs);
-    } else if (metric_type == METRIC_L2) {
-        return new IVFFlatScanner<METRIC_L2, CMax<float, int64_t>>(
-                d, store_pairs);
-    } else {
-        FAISS_THROW_MSG("metric type not supported");
-    }
-    return nullptr;
+        bool store_pairs,
+        const IDSelector* sel,
+        const IVFSearchParameters*) const {
+    Run_get_InvertedListScanner run;
+    return dispatch_VectorDistance(
+            d, metric_type, metric_arg, run, this, store_pairs, sel);
 }
 
 void IndexIVFFlat::reconstruct_from_offset(
@@ -217,8 +262,9 @@ IndexIVFFlatDedup::IndexIVFFlatDedup(
         Index* quantizer,
         size_t d,
         size_t nlist_,
-        MetricType metric_type)
-        : IndexIVFFlat(quantizer, d, nlist_, metric_type) {}
+        MetricType metric_type,
+        bool own_invlists)
+        : IndexIVFFlat(quantizer, d, nlist_, metric_type, own_invlists) {}
 
 void IndexIVFFlatDedup::train(idx_t n, const float* x) {
     std::unordered_map<uint64_t, idx_t> map;
@@ -447,7 +493,8 @@ void IndexIVFFlatDedup::range_search(
         idx_t,
         const float*,
         float,
-        RangeSearchResult*) const {
+        RangeSearchResult*,
+        const SearchParameters*) const {
     FAISS_THROW_MSG("not implemented");
 }
 

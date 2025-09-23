@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -30,14 +30,14 @@ struct IndexPreTransform;
  */
 struct IndexIVFSpectralHash : IndexIVF {
     /// transformation from d to nbit dim
-    VectorTransform* vt;
+    VectorTransform* vt = nullptr;
     /// own the vt
-    bool own_fields;
+    bool own_fields = true;
 
     /// nb of bits of the binary signature
-    int nbit;
+    int nbit = 0;
     /// interval size for 0s and 1s
-    float period;
+    float period = 0;
 
     enum ThresholdType {
         Thresh_global,        ///< global threshold at 0
@@ -45,7 +45,7 @@ struct IndexIVFSpectralHash : IndexIVF {
         Thresh_centroid_half, ///< central interval around centroid
         Thresh_median         ///< median of training set
     };
-    ThresholdType threshold_type;
+    ThresholdType threshold_type = Thresh_global;
 
     /// Trained threshold.
     /// size nlist * nbit or 0 if Thresh_global
@@ -56,11 +56,12 @@ struct IndexIVFSpectralHash : IndexIVF {
             size_t d,
             size_t nlist,
             int nbit,
-            float period);
+            float period,
+            bool own_invlists = true);
 
     IndexIVFSpectralHash();
 
-    void train_residual(idx_t n, const float* x) override;
+    void train_encoder(idx_t n, const float* x, const idx_t* assign) override;
 
     void encode_vectors(
             idx_t n,
@@ -70,7 +71,9 @@ struct IndexIVFSpectralHash : IndexIVF {
             bool include_listnos = false) const override;
 
     InvertedListScanner* get_InvertedListScanner(
-            bool store_pairs) const override;
+            bool store_pairs,
+            const IDSelector* sel,
+            const IVFSearchParameters* params) const override;
 
     /** replace the vector transform for an empty (and possibly untrained) index
      */

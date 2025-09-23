@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -10,6 +10,13 @@
 #include <faiss/Index.h>
 
 namespace faiss {
+
+struct IndexRefineSearchParameters : SearchParameters {
+    float k_factor = 1;
+    SearchParameters* base_index_params = nullptr; // non-owning
+
+    virtual ~IndexRefineSearchParameters() = default;
+};
 
 /** Index that queries in a base_index (a fast one) and refines the
  *  results with an exact search, hopefully improving the results.
@@ -44,7 +51,15 @@ struct IndexRefine : Index {
             const float* x,
             idx_t k,
             float* distances,
-            idx_t* labels) const override;
+            idx_t* labels,
+            const SearchParameters* params = nullptr) const override;
+
+    void range_search(
+            idx_t n,
+            const float* x,
+            float radius,
+            RangeSearchResult* result,
+            const SearchParameters* params = nullptr) const override;
 
     // reconstruct is routed to the refine_index
     void reconstruct(idx_t key, float* recons) const override;
@@ -76,7 +91,8 @@ struct IndexRefineFlat : IndexRefine {
             const float* x,
             idx_t k,
             float* distances,
-            idx_t* labels) const override;
+            idx_t* labels,
+            const SearchParameters* params = nullptr) const override;
 };
 
 } // namespace faiss

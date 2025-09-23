@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -8,16 +8,15 @@
 // -*- c++ -*-
 
 #include <faiss/impl/PolysemousTraining.h>
-#include "faiss/impl/FaissAssert.h"
 
 #include <omp.h>
 #include <stdint.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
-
-#include <algorithm>
+#include <memory>
 
 #include <faiss/utils/distances.h>
 #include <faiss/utils/hamming.h>
@@ -36,19 +35,6 @@ namespace faiss {
  * Optimization code
  ****************************************************/
 
-SimulatedAnnealingParameters::SimulatedAnnealingParameters() {
-    // set some reasonable defaults for the optimization
-    init_temperature = 0.7;
-    temperature_decay = pow(0.9, 1 / 500.);
-    // reduce by a factor 0.9 every 500 it
-    n_iter = 500000;
-    n_redo = 2;
-    seed = 123;
-    verbose = 0;
-    only_bit_flips = false;
-    init_random = false;
-}
-
 // what would the cost update be if iw and jw were swapped?
 // default implementation just computes both and computes the difference
 double PermutationObjective::cost_update(const int* perm, int iw, int jw)
@@ -56,8 +42,9 @@ double PermutationObjective::cost_update(const int* perm, int iw, int jw)
     double orig_cost = compute_cost(perm);
 
     std::vector<int> perm2(n);
-    for (int i = 0; i < n; i++)
+    for (int i = 0; i < n; i++) {
         perm2[i] = perm[i];
+    }
     perm2[iw] = perm[jw];
     perm2[jw] = perm[iw];
 
@@ -87,8 +74,9 @@ double SimulatedAnnealingOptimizer::run_optimization(int* best_perm) {
     // just do a few runs of the annealing and keep the lowest output cost
     for (int it = 0; it < n_redo; it++) {
         std::vector<int> perm(n);
-        for (int i = 0; i < n; i++)
+        for (int i = 0; i < n; i++) {
             perm[i] = i;
+        }
         if (init_random) {
             for (int i = 0; i < n; i++) {
                 int j = i + rnd->rand_int(n - i);
@@ -96,8 +84,9 @@ double SimulatedAnnealingOptimizer::run_optimization(int* best_perm) {
             }
         }
         float cost = optimize(perm.data());
-        if (logfile)
+        if (logfile) {
             fprintf(logfile, "\n");
+        }
         if (verbose > 1) {
             printf("    optimization run %d: cost=%g %s\n",
                    it,
@@ -117,8 +106,9 @@ double SimulatedAnnealingOptimizer::run_optimization(int* best_perm) {
 double SimulatedAnnealingOptimizer::optimize(int* perm) {
     double cost = init_cost = obj->compute_cost(perm);
     int log2n = 0;
-    while (!(n <= (1 << log2n)))
+    while (!(n <= (1 << log2n))) {
         log2n++;
+    }
     double temperature = init_temperature;
     int n_swap = 0, n_hot = 0;
     for (int it = 0; it < n_iter; it++) {
@@ -130,16 +120,18 @@ double SimulatedAnnealingOptimizer::optimize(int* perm) {
         } else {
             iw = rnd->rand_int(n);
             jw = rnd->rand_int(n - 1);
-            if (jw == iw)
+            if (jw == iw) {
                 jw++;
+            }
         }
         double delta_cost = obj->cost_update(perm, iw, jw);
         if (delta_cost < 0 || rnd->rand_float() < temperature) {
             std::swap(perm[iw], perm[jw]);
             cost += delta_cost;
             n_swap++;
-            if (delta_cost >= 0)
+            if (delta_cost >= 0) {
                 n_hot++;
+            }
         }
         if (verbose > 2 || (verbose > 1 && it % 10000 == 0)) {
             printf("      iteration %d cost %g temp %g n_swap %d "
@@ -161,8 +153,9 @@ double SimulatedAnnealingOptimizer::optimize(int* perm) {
                     n_hot);
         }
     }
-    if (verbose > 1)
+    if (verbose > 1) {
         printf("\n");
+    }
     return cost;
 }
 
@@ -481,8 +474,9 @@ struct Score3Computer : PermutationObjective {
      */
     Taccu compute_update(const int* perm, int iw, int jw) const {
         assert(iw != jw);
-        if (iw > jw)
+        if (iw > jw) {
             std::swap(iw, jw);
+        }
 
         Taccu accu = 0;
         const Ttab* n_gt_i = n_gt.data();
@@ -494,8 +488,9 @@ struct Score3Computer : PermutationObjective {
 
             accu += update_i_cross(perm, iw, jw, ip0, ip, n_gt_i);
 
-            if (ip != ip0)
+            if (ip != ip0) {
                 accu += update_i_plane(perm, iw, jw, ip0, ip, n_gt_i);
+            }
 
             n_gt_i += nc * nc;
         }
@@ -599,8 +594,9 @@ struct Score3Computer : PermutationObjective {
             const Ttab* n_gt_ij) const {
         Taccu accu = 0;
         for (int k = 0; k < nc; k++) {
-            if (k == iw || k == jw)
+            if (k == iw || k == jw) {
                 continue;
+            }
             int kp = perm[k];
             Ttab ng = n_gt_ij[k];
             if (hamming_dis(ip, jp) < hamming_dis(ip, kp)) {
@@ -631,8 +627,9 @@ struct Score3Computer : PermutationObjective {
             accu += update_k(perm, iw, jw, ip0, ip, jp0, jp, iw, n_gt_ij);
             accu += update_k(perm, iw, jw, ip0, ip, jp0, jp, jw, n_gt_ij);
 
-            if (jp != jp0)
+            if (jp != jp0) {
                 accu += update_j_line(perm, iw, jw, ip0, ip, jp0, jp, n_gt_ij);
+            }
 
             n_gt_ij += nc;
         }
@@ -697,18 +694,21 @@ struct RankingScore2 : Score3Computer<float, double> {
     double accum_gt_weight_diff(
             const std::vector<int>& a,
             const std::vector<int>& b) {
-        int nb = b.size(), na = a.size();
+        const auto nb_2 = b.size();
+        const auto na = a.size();
 
         double accu = 0;
-        int j = 0;
-        for (int i = 0; i < na; i++) {
-            int ai = a[i];
-            while (j < nb && ai >= b[j])
+        size_t j = 0;
+        for (size_t i = 0; i < na; i++) {
+            const auto ai = a[i];
+            while (j < nb_2 && ai >= b[j]) {
                 j++;
+            }
 
             double accu_i = 0;
-            for (int k = j; k < b.size(); k++)
+            for (auto k = j; k < b.size(); k++) {
                 accu_i += rank_weight(b[k] - ai);
+            }
 
             accu += rank_weight(ai) * accu_i;
         }
@@ -732,8 +732,9 @@ struct RankingScore2 : Score3Computer<float, double> {
 
             { // build rank table
                 IndirectSort s = {gtd};
-                for (int j = 0; j < nb; j++)
+                for (int j = 0; j < nb; j++) {
                     ranks[j] = j;
+                }
                 std::sort(ranks, ranks + nb, s);
             }
 
@@ -825,17 +826,20 @@ void PolysemousTraining::optimize_reproduce_distances(
                    final_cost);
         }
 
-        if (log_pattern.size())
+        if (log_pattern.size()) {
             fclose(optim.logfile);
+        }
 
         std::vector<float> centroids_copy;
-        for (int i = 0; i < dsub * n; i++)
+        for (int i = 0; i < dsub * n; i++) {
             centroids_copy.push_back(centroids[i]);
+        }
 
-        for (int i = 0; i < n; i++)
+        for (int i = 0; i < n; i++) {
             memcpy(centroids + perm[i] * dsub,
                    centroids_copy.data() + i * dsub,
                    dsub * sizeof(centroids[0]));
+        }
     }
 }
 
@@ -864,14 +868,16 @@ void PolysemousTraining::optimize_ranking(
 
         if (n > 0) {
             std::vector<float> xtrain(n * dsub);
-            for (int i = 0; i < n; i++)
+            for (int i = 0; i < n; i++) {
                 memcpy(xtrain.data() + i * dsub,
                        x + i * pq.d + m * dsub,
                        sizeof(float) * dsub);
+            }
 
             codes.resize(n);
-            for (int i = 0; i < n; i++)
+            for (int i = 0; i < n; i++) {
                 codes[i] = all_codes[i * pq.code_size + m];
+            }
 
             nq = n / 4;
             nb = n - nq;
@@ -884,8 +890,9 @@ void PolysemousTraining::optimize_ranking(
         } else {
             nq = nb = pq.ksub;
             codes.resize(2 * nq);
-            for (int i = 0; i < nq; i++)
+            for (int i = 0; i < nq; i++) {
                 codes[i] = codes[i + nq] = i;
+            }
 
             gt_distances.resize(nq * nb);
 
@@ -896,17 +903,16 @@ void PolysemousTraining::optimize_ranking(
 
         double t0 = getmillisecs();
 
-        PermutationObjective* obj = new RankingScore2(
+        std::unique_ptr<PermutationObjective> obj(new RankingScore2(
                 nbits,
                 nq,
                 nb,
                 codes.data(),
                 codes.data() + nq,
-                gt_distances.data());
-        ScopeDeleter1<PermutationObjective> del(obj);
+                gt_distances.data()));
 
         if (verbose > 0) {
-            printf("   m=%d, nq=%zd, nb=%zd, intialize RankingScore "
+            printf("   m=%d, nq=%zd, nb=%zd, initialize RankingScore "
                    "in %.3f ms\n",
                    m,
                    nq,
@@ -914,7 +920,7 @@ void PolysemousTraining::optimize_ranking(
                    getmillisecs() - t0);
         }
 
-        SimulatedAnnealingOptimizer optim(obj, *this);
+        SimulatedAnnealingOptimizer optim(obj.get(), *this);
 
         if (log_pattern.size()) {
             char fname[256];
@@ -933,19 +939,22 @@ void PolysemousTraining::optimize_ranking(
                optim.init_cost,
                final_cost);
 
-        if (log_pattern.size())
+        if (log_pattern.size()) {
             fclose(optim.logfile);
+        }
 
         float* centroids = pq.get_centroids(m, 0);
 
         std::vector<float> centroids_copy;
-        for (int i = 0; i < dsub * pq.ksub; i++)
+        for (int i = 0; i < dsub * pq.ksub; i++) {
             centroids_copy.push_back(centroids[i]);
+        }
 
-        for (int i = 0; i < pq.ksub; i++)
+        for (int i = 0; i < pq.ksub; i++) {
             memcpy(centroids + perm[i] * dsub,
                    centroids_copy.data() + i * dsub,
                    dsub * sizeof(centroids[0]));
+        }
     }
 }
 

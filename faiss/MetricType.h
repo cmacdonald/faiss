@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -9,6 +9,9 @@
 
 #ifndef FAISS_METRIC_TYPE_H
 #define FAISS_METRIC_TYPE_H
+
+#include <cstdint>
+#include <cstdio>
 
 namespace faiss {
 
@@ -29,7 +32,25 @@ enum MetricType {
     METRIC_Canberra = 20,
     METRIC_BrayCurtis,
     METRIC_JensenShannon,
+
+    /// sum_i(min(a_i, b_i)) / sum_i(max(a_i, b_i)) where a_i, b_i > 0
+    METRIC_Jaccard,
+    /// Squared Eucliden distance, ignoring NaNs
+    METRIC_NaNEuclidean,
+    /// Gower's distance - numeric dimensions are in [0,1] and categorical
+    /// dimensions are negative integers
+    METRIC_GOWER,
 };
+
+/// all vector indices are this type
+using idx_t = int64_t;
+
+/// this function is used to distinguish between min and max indexes since
+/// we need to support similarity and dis-similarity metrics in a flexible way
+constexpr bool is_similarity_metric(MetricType metric_type) {
+    return ((metric_type == METRIC_INNER_PRODUCT) ||
+            (metric_type == METRIC_Jaccard));
+}
 
 } // namespace faiss
 

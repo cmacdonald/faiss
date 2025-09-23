@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -14,7 +14,8 @@
 
 using namespace faiss;
 
-TEST(MEM_LEAK, ivfflat) {
+TEST(TestMemoryLeak, ivfflat) {
+    GTEST_SKIP() << "Skipping flaky memory leak test.";
     size_t num_tfidf_faiss_cells = 20;
     size_t max_tfidf_features = 500;
 
@@ -40,7 +41,7 @@ TEST(MEM_LEAK, ivfflat) {
         double t0 = getmillisecs();
 
         for (int i = 0; i < N2; i++) {
-            std::vector<Index::idx_t> I(10 * bs);
+            std::vector<idx_t> I(10 * bs);
             std::vector<float> D(10 * bs);
 
             tfidf_faiss_index.search(

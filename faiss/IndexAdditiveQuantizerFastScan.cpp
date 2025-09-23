@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -7,11 +7,8 @@
 
 #include <faiss/IndexAdditiveQuantizerFastScan.h>
 
-#include <limits.h>
 #include <cassert>
 #include <memory>
-
-#include <omp.h>
 
 #include <faiss/impl/FaissAssert.h>
 #include <faiss/impl/LocalSearchQuantizer.h>
@@ -35,30 +32,31 @@ IndexAdditiveQuantizerFastScan::IndexAdditiveQuantizerFastScan(
 }
 
 void IndexAdditiveQuantizerFastScan::init(
-        AdditiveQuantizer* aq,
+        AdditiveQuantizer* aq_init,
         MetricType metric,
         int bbs) {
-    FAISS_THROW_IF_NOT(aq != nullptr);
-    FAISS_THROW_IF_NOT(!aq->nbits.empty());
-    FAISS_THROW_IF_NOT(aq->nbits[0] == 4);
+    FAISS_THROW_IF_NOT(aq_init != nullptr);
+    FAISS_THROW_IF_NOT(!aq_init->nbits.empty());
+    FAISS_THROW_IF_NOT(aq_init->nbits[0] == 4);
     if (metric == METRIC_INNER_PRODUCT) {
         FAISS_THROW_IF_NOT_MSG(
-                aq->search_type == AdditiveQuantizer::ST_LUT_nonorm,
+                aq_init->search_type == AdditiveQuantizer::ST_LUT_nonorm,
                 "Search type must be ST_LUT_nonorm for IP metric");
     } else {
         FAISS_THROW_IF_NOT_MSG(
-                aq->search_type == AdditiveQuantizer::ST_norm_lsq2x4 ||
-                        aq->search_type == AdditiveQuantizer::ST_norm_rq2x4,
+                aq_init->search_type == AdditiveQuantizer::ST_norm_lsq2x4 ||
+                        aq_init->search_type ==
+                                AdditiveQuantizer::ST_norm_rq2x4,
                 "Search type must be lsq2x4 or rq2x4 for L2 metric");
     }
 
-    this->aq = aq;
+    this->aq = aq_init;
     if (metric == METRIC_L2) {
-        M = aq->M + 2; // 2x4 bits AQ
+        M = aq_init->M + 2; // 2x4 bits AQ
     } else {
-        M = aq->M;
+        M = aq_init->M;
     }
-    init_fastscan(aq->d, M, 4, metric, bbs);
+    init_fastscan(aq_init->d, M, 4, metric, bbs);
 
     max_train_points = 1024 * ksub * M;
 }
@@ -83,7 +81,7 @@ IndexAdditiveQuantizerFastScan::IndexAdditiveQuantizerFastScan(
     pq4_pack_codes(orig_codes, ntotal, M, ntotal2, bbs, M2, codes.get());
 }
 
-IndexAdditiveQuantizerFastScan::~IndexAdditiveQuantizerFastScan() {}
+IndexAdditiveQuantizerFastScan::~IndexAdditiveQuantizerFastScan() = default;
 
 void IndexAdditiveQuantizerFastScan::train(idx_t n, const float* x_in) {
     if (is_trained) {
@@ -190,7 +188,10 @@ void IndexAdditiveQuantizerFastScan::search(
         const float* x,
         idx_t k,
         float* distances,
-        idx_t* labels) const {
+        idx_t* labels,
+        const SearchParameters* params) const {
+    FAISS_THROW_IF_NOT_MSG(
+            !params, "search params not supported for this index");
     FAISS_THROW_IF_NOT(k > 0);
     bool rescale = (rescale_norm && norm_scale > 1 && metric_type == METRIC_L2);
     if (!rescale) {
@@ -200,10 +201,17 @@ void IndexAdditiveQuantizerFastScan::search(
 
     NormTableScaler scaler(norm_scale);
     if (metric_type == METRIC_L2) {
-        search_dispatch_implem<true>(n, x, k, distances, labels, scaler);
+        search_dispatch_implem<true>(n, x, k, distances, labels, &scaler);
     } else {
-        search_dispatch_implem<false>(n, x, k, distances, labels, scaler);
+        search_dispatch_implem<false>(n, x, k, distances, labels, &scaler);
     }
+}
+
+void IndexAdditiveQuantizerFastScan::sa_decode(
+        idx_t n,
+        const uint8_t* bytes,
+        float* x) const {
+    aq->decode(bytes, x, n);
 }
 
 /**************************************************************************************
@@ -242,6 +250,48 @@ IndexLocalSearchQuantizerFastScan::IndexLocalSearchQuantizerFastScan(
 
 IndexLocalSearchQuantizerFastScan::IndexLocalSearchQuantizerFastScan() {
     aq = &lsq;
+}
+
+/**************************************************************************************
+ * IndexProductResidualQuantizerFastScan
+ **************************************************************************************/
+
+IndexProductResidualQuantizerFastScan::IndexProductResidualQuantizerFastScan(
+        int d,          ///< dimensionality of the input vectors
+        size_t nsplits, ///< number of residual quantizers
+        size_t Msub,    ///< number of subquantizers per RQ
+        size_t nbits,   ///< number of bit per subvector index
+        MetricType metric,
+        Search_type_t search_type,
+        int bbs)
+        : prq(d, nsplits, Msub, nbits, search_type) {
+    init(&prq, metric, bbs);
+}
+
+IndexProductResidualQuantizerFastScan::IndexProductResidualQuantizerFastScan() {
+    aq = &prq;
+}
+
+/**************************************************************************************
+ * IndexProductLocalSearchQuantizerFastScan
+ **************************************************************************************/
+
+IndexProductLocalSearchQuantizerFastScan::
+        IndexProductLocalSearchQuantizerFastScan(
+                int d,          ///< dimensionality of the input vectors
+                size_t nsplits, ///< number of local search quantizers
+                size_t Msub,    ///< number of subquantizers per LSQ
+                size_t nbits,   ///< number of bit per subvector index
+                MetricType metric,
+                Search_type_t search_type,
+                int bbs)
+        : plsq(d, nsplits, Msub, nbits, search_type) {
+    init(&plsq, metric, bbs);
+}
+
+IndexProductLocalSearchQuantizerFastScan::
+        IndexProductLocalSearchQuantizerFastScan() {
+    aq = &plsq;
 }
 
 } // namespace faiss

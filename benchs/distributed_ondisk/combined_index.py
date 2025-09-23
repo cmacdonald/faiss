@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
@@ -142,6 +141,7 @@ class CombinedIndex:
 
     def set_omp_num_threads(self, nt):
         faiss.omp_set_num_threads(nt)
+
 
 class CombinedIndexDeep1B(CombinedIndex):
     """ loads a CombinedIndex with the data from the big photodna index """

@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -26,13 +26,15 @@ struct IndexIVFFlat : IndexIVF {
             Index* quantizer,
             size_t d,
             size_t nlist_,
-            MetricType = METRIC_L2);
+            MetricType = METRIC_L2,
+            bool own_invlists = true);
 
     void add_core(
             idx_t n,
             const float* x,
             const idx_t* xids,
-            const idx_t* precomputed_idx) override;
+            const idx_t* precomputed_idx,
+            void* inverted_list_context = nullptr) override;
 
     void encode_vectors(
             idx_t n,
@@ -41,15 +43,23 @@ struct IndexIVFFlat : IndexIVF {
             uint8_t* codes,
             bool include_listnos = false) const override;
 
+    void decode_vectors(
+            idx_t n,
+            const uint8_t* codes,
+            const idx_t* list_nos,
+            float* x) const override;
+
     InvertedListScanner* get_InvertedListScanner(
-            bool store_pairs) const override;
+            bool store_pairs,
+            const IDSelector* sel,
+            const IVFSearchParameters* params) const override;
 
     void reconstruct_from_offset(int64_t list_no, int64_t offset, float* recons)
             const override;
 
     void sa_decode(idx_t n, const uint8_t* bytes, float* x) const override;
 
-    IndexIVFFlat() {}
+    IndexIVFFlat();
 };
 
 struct IndexIVFFlatDedup : IndexIVFFlat {
@@ -62,7 +72,8 @@ struct IndexIVFFlatDedup : IndexIVFFlat {
             Index* quantizer,
             size_t d,
             size_t nlist_,
-            MetricType = METRIC_L2);
+            MetricType = METRIC_L2,
+            bool own_invlists = true);
 
     /// also dedups the training set
     void train(idx_t n, const float* x) override;
@@ -89,7 +100,8 @@ struct IndexIVFFlatDedup : IndexIVFFlat {
             idx_t n,
             const float* x,
             float radius,
-            RangeSearchResult* result) const override;
+            RangeSearchResult* result,
+            const SearchParameters* params = nullptr) const override;
 
     /// not implemented
     void update_vectors(int nv, const idx_t* idx, const float* v) override;

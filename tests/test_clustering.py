@@ -1,4 +1,4 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
@@ -9,7 +9,6 @@ import numpy as np
 
 import faiss
 import unittest
-import array
 
 from common_faiss_tests import get_dataset_2
 
@@ -109,9 +108,6 @@ class TestClustering(unittest.TestCase):
         # distance^2 of ground-truth centroids to clusters
         cdis2_first = cdis2[:5].sum()
         cdis2_last = cdis2[5:].sum()
-
-        print(cdis1_first, cdis1_last)
-        print(cdis2_first, cdis2_last)
 
         # with the new clustering, the last should be much (*2) closer
         # to their centroids

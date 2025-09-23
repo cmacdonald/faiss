@@ -1,11 +1,9 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
  */
-
-// -*- c++ -*-
 
 #ifndef FAISS_IVFLIB_H
 #define FAISS_IVFLIB_H
@@ -16,10 +14,16 @@
  * IndexIVFs embedded within an IndexPreTransform.
  */
 
+#include <faiss/IndexBinaryIVF.h>
 #include <faiss/IndexIVF.h>
 #include <vector>
 
 namespace faiss {
+
+struct IndexIVFResidualQuantizer;
+struct IndexResidualQuantizer;
+struct ResidualQuantizer;
+
 namespace ivflib {
 
 /** check if two indexes have the same parameters and are trained in
@@ -44,8 +48,6 @@ IndexIVF* try_extract_index_ivf(Index* index);
  * @param shift_ids: translate the ids from index1 to index0->prev_ntotal
  */
 void merge_into(Index* index0, Index* index1, bool shift_ids);
-
-typedef Index::idx_t idx_t;
 
 /* Returns the cluster the embeddings belong to.
  *
@@ -144,6 +146,68 @@ void range_search_with_parameters(
         const IVFSearchParameters* params,
         size_t* nb_dis = nullptr,
         double* ms_per_stage = nullptr);
+
+/** Build an IndexIVFResidualQuantizer from an ResidualQuantizer, using the
+ * nlevel first components as coarse quantizer and the rest as codes in invlists
+ */
+IndexIVFResidualQuantizer* ivf_residual_from_quantizer(
+        const ResidualQuantizer&,
+        int nlevel);
+
+/** add from codes. NB that the norm component is not used, so the code_size can
+ * be provided.
+ *
+ * @param ivfrq      index to populate with the codes
+ * @param codes      codes to add, size (ncode, code_size)
+ * @param code_size  override the ivfrq's code_size, useful if the norm encoding
+ *                   is different
+ */
+void ivf_residual_add_from_flat_codes(
+        IndexIVFResidualQuantizer* ivfrq,
+        size_t ncode,
+        const uint8_t* codes,
+        int64_t code_size = -1);
+
+struct ShardingFunction {
+    virtual int64_t operator()(int64_t i, int64_t shard_count) = 0;
+    virtual ~ShardingFunction() = default;
+    ShardingFunction() {}
+    ShardingFunction(const ShardingFunction&) = default;
+    ShardingFunction(ShardingFunction&&) = default;
+    ShardingFunction& operator=(const ShardingFunction&) = default;
+    ShardingFunction& operator=(ShardingFunction&&) = default;
+};
+struct DefaultShardingFunction : ShardingFunction {
+    int64_t operator()(int64_t i, int64_t shard_count) override;
+};
+
+/**
+ * Shards an IVF index centroids by the given sharding function, and writes
+ * the index to the path given by filename_generator. The centroids must already
+ * be added to the index quantizer.
+ *
+ * @param index             The IVF index containing centroids to shard.
+ * @param shard_count       Number of shards.
+ * @param filename_template Template for shard filenames.
+ * @param sharding_function The function to shard by. The default is ith vector
+ *                          mod shard_count.
+ * @param generate_ids      Generates ids using IndexIDMap2. If true, ids will
+ *                          match the default ids in the unsharded index.
+ * @return                  The number of shards written.
+ */
+void shard_ivf_index_centroids(
+        IndexIVF* index,
+        int64_t shard_count = 20,
+        const std::string& filename_template = "shard.%d.index",
+        ShardingFunction* sharding_function = nullptr,
+        bool generate_ids = false);
+
+void shard_binary_ivf_index_centroids(
+        faiss::IndexBinaryIVF* index,
+        int64_t shard_count = 20,
+        const std::string& filename_template = "shard.%d.index",
+        ShardingFunction* sharding_function = nullptr,
+        bool generate_ids = false);
 
 } // namespace ivflib
 } // namespace faiss
