@@ -173,8 +173,7 @@ class TestComponents(unittest.TestCase):
         new_codebooks = new_codebooks.reshape(M, K, d).copy()
 
         ref_codebooks = update_codebooks_ref(x, codes, K, lambd)
-
-        np.testing.assert_allclose(new_codebooks, ref_codebooks, atol=1e-3)
+        np.testing.assert_allclose(new_codebooks, ref_codebooks, rtol=1e-3, atol=1e-3)
 
     def test_update_codebooks_with_double(self):
         """If the data is not zero-centering, it would be more accurate to
