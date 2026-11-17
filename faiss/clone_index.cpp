@@ -42,6 +42,7 @@
 #include <faiss/IndexPiPNN.h>
 #include <faiss/IndexPreTransform.h>
 #include <faiss/IndexRaBitQ.h>
+#include <faiss/IndexRecJPQPrune.h>
 #include <faiss/IndexRefine.h>
 #include <faiss/IndexRowwiseMinMax.h>
 #include <faiss/IndexScalarQuantizer.h>
@@ -294,6 +295,31 @@ InvertedLists* clone_InvertedLists(const InvertedLists* invlists) {
 } // anonymous namespace
 
 Index* Cloner::clone_Index(const Index* index) {
+    // IndexRecJPQPrune is not copyable (it owns a mutex-guarded thread
+    // scratch cache); clone it by rebuilding from its stored data.
+    if (const IndexRecJPQPrune* irj =
+                dynamic_cast<const IndexRecJPQPrune*>(index)) {
+        auto* res = new IndexRecJPQPrune(
+                (size_t)irj->d, irj->M, irj->B, irj->metric_type);
+        res->is_trained = irj->is_trained;
+        res->verbose = irj->verbose;
+        res->batch_size = irj->batch_size;
+        res->max_iterations = irj->max_iterations;
+        res->ub_inflation = irj->ub_inflation;
+        res->exact_mode = irj->exact_mode;
+        if (irj->ntotal > 0) {
+            res->build(
+                    (size_t)irj->ntotal,
+                    irj->item_codes.data(),
+                    irj->codebooks.data(),
+                    irj->ids.data());
+        } else {
+            res->codebooks = irj->codebooks;
+            res->ids_sequential = irj->ids_sequential;
+        }
+        return res;
+    }
+
     TRYCLONE(IndexPQ, index)
     TRYCLONE(IndexLSH, index)
 

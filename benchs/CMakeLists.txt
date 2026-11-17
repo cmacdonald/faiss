@@ -12,6 +12,9 @@ add_executable(bench_rabitq_batch_estimates EXCLUDE_FROM_ALL
 include(../cmake/link_to_faiss_lib.cmake)
 link_to_faiss_lib(bench_rabitq_batch_estimates)
 
+add_executable(bench_recjpq_prune EXCLUDE_FROM_ALL bench_recjpq_prune.cpp)
+link_to_faiss_lib(bench_recjpq_prune)
+
 add_executable(bench_ivf_selector EXCLUDE_FROM_ALL bench_ivf_selector.cpp)
 target_link_libraries(bench_ivf_selector PRIVATE faiss_avx512 ${BLAS_LIBRARIES} ${LAPACK_LIBRARIES} OpenMP::OpenMP_CXX)
 target_compile_options(bench_ivf_selector PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-mavx2 -mfma -mf16c -mavx512f -mavx512cd -mavx512vl -mavx512dq -mavx512bw -mpopcnt>)

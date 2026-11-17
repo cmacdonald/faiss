@@ -149,6 +149,7 @@ set(FAISS_SRC
   IndexPreTransform.cpp
   IndexRaBitQ.cpp
   IndexRaBitQFastScan.cpp
+  IndexRecJPQPrune.cpp
   IndexRefine.cpp
   IndexReplicas.cpp
   IndexRowwiseMinMax.cpp
@@ -214,6 +215,7 @@ set(FAISS_SRC
   invlists/DirectMap.cpp
   invlists/InvertedLists.cpp
   invlists/InvertedListsIOHook.cpp
+  invlists/RecJPQInvertedLists.cpp
   utils/Heap.cpp
   utils/NeuralNet.cpp
   utils/WorkerThread.cpp
@@ -301,6 +303,7 @@ set(FAISS_HEADERS
   IndexReplicas.h
   IndexRaBitQ.h
   IndexRaBitQFastScan.h
+  IndexRecJPQPrune.h
   IndexRowwiseMinMax.h
   IndexSQFastScan.h
   IndexIVFSQFastScan.h
@@ -406,6 +409,7 @@ set(FAISS_HEADERS
   invlists/InvertedLists.h
   invlists/InvertedListsIOHook.h
   invlists/OnDiskInvertedLists.h
+  invlists/RecJPQInvertedLists.h
   utils/AlignedTable.h
   utils/bf16.h
   utils/Heap.h

@@ -41,6 +41,7 @@ set(FAISS_TEST_SRC
   test_rabitq_split_inner_product.cpp
   test_super_kmeans_foundations.cpp
   test_pipnn.cpp
+  test_recjpq_prune.cpp
 )
 
 # Tests that use POSIX APIs or have platform-specific issues on Windows

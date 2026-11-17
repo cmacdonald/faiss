@@ -60,6 +60,7 @@
 #include <faiss/IndexPreTransform.h>
 #include <faiss/IndexRaBitQ.h>
 #include <faiss/IndexRaBitQFastScan.h>
+#include <faiss/IndexRecJPQPrune.h>
 #include <faiss/IndexRefine.h>
 #include <faiss/IndexRowwiseMinMax.h>
 #include <faiss/IndexSQFastScan.h>
@@ -2008,6 +2009,93 @@ std::unique_ptr<Index> read_index_up(IOReader* f, int io_flags) {
                         idxpl->code_size,
                         "IndexProductLocalSearchQuantizer codes"));
         idx = std::move(idxpl);
+    } else if (h == fourcc("IRJQ")) {
+        auto idxr = std::make_unique<IndexRecJPQPrune>();
+        read_index_header(*idxr, f);
+        READ1(idxr->M);
+        READ1(idxr->B);
+        FAISS_THROW_IF_NOT_FMT(
+                idxr->d > 0 && idxr->d % (int)idxr->M == 0,
+                "IndexRecJPQPrune: d=%d must be a positive multiple of "
+                "M=%zu",
+                idxr->d,
+                idxr->M);
+        FAISS_THROW_IF_NOT_FMT(
+                idxr->B >= 1 && idxr->B <= 256,
+                "IndexRecJPQPrune: B=%zu out of range [1, 256]",
+                idxr->B);
+        FAISS_THROW_IF_NOT_MSG(
+                idxr->metric_type == METRIC_INNER_PRODUCT,
+                "IndexRecJPQPrune: unsupported metric");
+        idxr->d_split = (size_t)idxr->d / idxr->M;
+        READ1(idxr->batch_size);
+        READ1(idxr->max_iterations);
+        READ1(idxr->ub_inflation);
+        FAISS_THROW_IF_NOT_FMT(
+                idxr->ub_inflation >= 1.0f,
+                "IndexRecJPQPrune: ub_inflation %g must be >= 1.0",
+                (double)idxr->ub_inflation);
+        READ1_BOOL(idxr->exact_mode);
+        read_vector(idxr->item_codes, f);
+        read_vector(idxr->ids, f);
+        read_vector(idxr->codebooks, f);
+        read_vector(idxr->invlists.offsets, f);
+        read_vector(idxr->invlists.item_ids, f);
+        const size_t expected_ntotal = (size_t)idxr->ntotal;
+        FAISS_THROW_IF_NOT_FMT(
+                idxr->item_codes.size() ==
+                        mul_no_overflow(
+                                expected_ntotal,
+                                idxr->M,
+                                "IndexRecJPQPrune item_codes"),
+                "IndexRecJPQPrune: item_codes size %zu, expected ntotal*M "
+                "(ntotal=%zu, M=%zu)",
+                idxr->item_codes.size(),
+                expected_ntotal,
+                idxr->M);
+        FAISS_THROW_IF_NOT_FMT(
+                idxr->ids.size() == expected_ntotal,
+                "IndexRecJPQPrune: ids size %zu, expected ntotal=%zu",
+                idxr->ids.size(),
+                expected_ntotal);
+        FAISS_THROW_IF_NOT_FMT(
+                idxr->codebooks.size() ==
+                        mul_no_overflow(
+                                idxr->M * idxr->B,
+                                idxr->d_split,
+                                "IndexRecJPQPrune codebooks"),
+                "IndexRecJPQPrune: codebooks size %zu, expected M*B*d_split "
+                "(M=%zu, B=%zu, d_split=%zu)",
+                idxr->codebooks.size(),
+                idxr->M,
+                idxr->B,
+                idxr->d_split);
+        FAISS_THROW_IF_NOT_FMT(
+                idxr->invlists.offsets.size() == idxr->M * idxr->B + 1,
+                "IndexRecJPQPrune: list offsets size %zu, expected M*B+1 "
+                "(M=%zu, B=%zu)",
+                idxr->invlists.offsets.size(),
+                idxr->M,
+                idxr->B);
+        FAISS_THROW_IF_NOT_FMT(
+                idxr->invlists.item_ids.size() == expected_ntotal * idxr->M,
+                "IndexRecJPQPrune: list item_ids size %zu, expected "
+                "ntotal*M (ntotal=%zu, M=%zu)",
+                idxr->invlists.item_ids.size(),
+                expected_ntotal,
+                idxr->M);
+        idxr->invlists.M = idxr->M;
+        idxr->invlists.B = idxr->B;
+        // recompute whether the external ids are sequential
+        bool sequential = true;
+        for (size_t i = 0; i < idxr->ids.size(); i++) {
+            if (idxr->ids[i] != (idx_t)i) {
+                sequential = false;
+                break;
+            }
+        }
+        idxr->ids_sequential = sequential;
+        idx = std::move(idxr);
     } else if (h == fourcc("ImRQ")) {
         auto idxr = std::make_unique<ResidualCoarseQuantizer>();
         read_index_header(*idxr, f);

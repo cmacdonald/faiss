@@ -55,6 +55,7 @@
 #include <faiss/IndexPreTransform.h>
 #include <faiss/IndexRaBitQ.h>
 #include <faiss/IndexRaBitQFastScan.h>
+#include <faiss/IndexRecJPQPrune.h>
 #include <faiss/IndexRefine.h>
 #include <faiss/IndexRowwiseMinMax.h>
 #include <faiss/IndexSQFastScan.h>
@@ -1170,6 +1171,24 @@ void write_index(const Index* idx, IOWriter* f, int io_flags) {
         WRITE1(ivrq->by_residual);
         WRITE1(ivrq->qb);
         write_InvertedLists(ivrq->invlists, f);
+    }
+    else if (
+            const IndexRecJPQPrune* irj =
+                    dynamic_cast<const IndexRecJPQPrune*>(idx)) {
+        uint32_t h = fourcc("IRJQ");
+        WRITE1(h);
+        write_index_header(irj, f);
+        WRITE1(irj->M);
+        WRITE1(irj->B);
+        WRITE1(irj->batch_size);
+        WRITE1(irj->max_iterations);
+        WRITE1(irj->ub_inflation);
+        WRITE1(irj->exact_mode);
+        WRITEVECTOR(irj->item_codes);
+        WRITEVECTOR(irj->ids);
+        WRITEVECTOR(irj->codebooks);
+        WRITEVECTOR(irj->invlists.offsets);
+        WRITEVECTOR(irj->invlists.item_ids);
     }
 #ifdef FAISS_ENABLE_DISK_IVF
     else if (
